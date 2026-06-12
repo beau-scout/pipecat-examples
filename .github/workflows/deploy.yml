@@ -22,6 +22,6 @@ jobs:
           cloud-build: true
           build-context: ./outbound-sales/server
           dockerfile: Dockerfile
-          secret-set: outbound-sales-secrets
+          secret-set: scout
           agent-profile: agent-1x
           min-agents: 1
