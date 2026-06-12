@@ -1,0 +1,27 @@
+name: Deploy to Pipecat Cloud
+
+on:
+  push:
+    branches: ["jh/outbound-sales"]
+    paths:
+      - "outbound-sales/server/**"
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build and Deploy to Pipecat Cloud
+        uses: daily-co/pipecat-cloud-deploy-action@v2
+        with:
+          api-key: ${{ secrets.PCC_API_KEY }}
+          agent-name: outbound-sales
+          cloud-build: true
+          build-context: ./outbound-sales/server
+          dockerfile: Dockerfile
+          secret-set: outbound-sales-secrets
+          agent-profile: agent-1x
+          min-agents: 1
