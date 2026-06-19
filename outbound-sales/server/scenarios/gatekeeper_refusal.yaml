@@ -1,5 +1,5 @@
-# Refusal: the person is not interested and asks to be removed from the list.
-# Hailey must apologize once, never argue, and end the call with reason
+# Refusal: the front office is not interested and asks to be removed from the
+# list. Hailey must apologize once, never argue, and end the call with reason
 # "refused".
 name: gatekeeper_refusal
 
@@ -10,12 +10,12 @@ judge:
     model: gpt-4o-mini
 
 turns:
-  - user: "Hello?"
+  - user: "Riverside High School, how can I help you?"
     expect:
       - event: response
-        eval: "introduces herself as Hailey and asks if she is speaking with Beau"
+        eval: "says she is calling from RunScout and asks who is in charge of safety or security"
 
-  - user: "We don't take sales calls. Take us off your list, please."
+  - user: "We don't take vendor calls. Please take us off your list."
     expect:
       - event: response
         eval: "apologizes once, does not argue or push back, thanks them, and says goodbye"

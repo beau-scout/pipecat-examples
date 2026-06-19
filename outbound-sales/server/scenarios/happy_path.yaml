@@ -1,5 +1,6 @@
-# Happy path: the lead answers, confirms their name, and hands over the IT
-# decision maker's contact info. Hailey saves it, says thanks, and hangs up.
+# Happy path: the front office answers and hands over the security director's
+# contact info. Hailey reads the email back to confirm, saves it (with the
+# phone extension), says thanks, and hangs up.
 name: happy_path
 
 judge:
@@ -9,28 +10,32 @@ judge:
     model: gpt-4o-mini
 
 turns:
-  # On a phone call the callee speaks first; Hailey then introduces herself.
-  - user: "Hello?"
+  # On a phone call the callee speaks first; Hailey then continues.
+  - user: "Good morning, Lincoln Elementary, front office."
     expect:
       - event: response
-        eval: "introduces herself as Hailey and asks if she is speaking with Beau"
+        eval: "asks who is in charge of safety or security at the school or district"
 
-  - user: "Yeah, this is Beau."
+  - user: "Why are you calling? What is this about?"
     expect:
       - event: response
-        eval: "briefly explains why she is calling and asks who handles IT decisions"
+        eval: "briefly explains RunScout connects to existing camera systems to detect everyday safety incidents like student elopement or propped-open doors, and returns to asking who handles security"
 
-# Once Hailey has the contact info she saves it, thanks Beau, and hangs up,
-  # all in the same turn.
-  - user: "Oh sure, that'd be our IT director, Dana Smith. You can reach her at dana@acmerobotics.com or 555-0142."
+  - user: "Oh, that'd be our safety director, Dana Smith. Her email is dana.smith@lincoln.k12.ca.us, and her direct line is 555-0142 extension 12."
     expect:
-      # Expectations match in order: Hailey saves the contact, speaks her
-      # thanks, then hangs up.
+      # Hailey reads the email back to confirm before saving.
+      - event: response
+        eval: "reads the email address back to confirm it is spelled correctly"
+
+  - user: "Yes, that's correct."
+    expect:
+      # Expectations match in order: Hailey saves the contact (with extension),
+      # speaks her thanks, then hangs up.
       - event: function_call
         calls:
           - name: save_contact_info
       - event: response
-        eval: "thanks Beau"
+        eval: "thanks them"
       - event: function_call
         calls:
           - name: end_call

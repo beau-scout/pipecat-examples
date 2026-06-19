@@ -4,13 +4,15 @@
 # SPDX-License-Identifier: BSD 2-Clause License
 #
 
-"""Batch dialer: calls every lead in leads.csv, five at a time.
+"""Batch dialer: calls every school in leads.csv, five at a time.
 
-For each batch it POSTs /dialout to server.py once per lead, then polls the
-server's /results endpoint until every call in the batch has an outcome row
-(the bot reports one when a call ends) or the timeout passes. Leads that
-already have a result are skipped, so re-running the dialer resumes where it
-left off while server.py stays up.
+leads.csv has columns ``phone,school`` (the school or district name; an
+optional ``name`` column for a known contact is also honored). For each batch
+it POSTs /dialout to server.py once per lead, then polls the server's /results
+endpoint until every call in the batch has an outcome row (the bot reports one
+when a call ends) or the timeout passes. Leads that already have a result are
+skipped, so re-running the dialer resumes where it left off while server.py
+stays up.
 
 Usage::
 
@@ -61,7 +63,8 @@ async def dial_lead(session: aiohttp.ClientSession, server_url: str, lead: dict,
         "lead": {
             "phone": lead["phone"],
             "name": lead.get("name") or None,
-            "company": lead.get("company") or None,
+            # The school/district name lands on the lead's "company" field.
+            "company": lead.get("school") or lead.get("company") or None,
         },
         "call_id": call_id,
     }
@@ -89,7 +92,7 @@ async def run_batch(session: aiohttp.ClientSession, server_url: str, batch: list
                     "call_id": call_id,
                     "lead_phone": lead["phone"],
                     "lead_name": lead.get("name", ""),
-                    "lead_company": lead.get("company", ""),
+                    "lead_company": lead.get("school") or lead.get("company", ""),
                     "outcome": "error",
                     "notes": str(e),
                 },
@@ -115,14 +118,14 @@ async def run_batch(session: aiohttp.ClientSession, server_url: str, batch: list
                 "call_id": call_id,
                 "lead_phone": lead["phone"],
                 "lead_name": lead.get("name", ""),
-                "lead_company": lead.get("company", ""),
+                "lead_company": lead.get("school") or lead.get("company", ""),
                 "outcome": "timeout",
             },
         )
 
 
 async def main():
-    parser = argparse.ArgumentParser(description="Batch dialer for the outbound sales bot")
+    parser = argparse.ArgumentParser(description="Batch dialer for the RunScout school-safety bot")
     parser.add_argument("--leads", default="leads.csv", help="Path to the leads CSV")
     parser.add_argument("--server", default="http://localhost:8080", help="server.py base URL")
     args = parser.parse_args()
@@ -154,10 +157,13 @@ async def main():
         captured = [row for row in rows.values() if row["outcome"] == "contact_captured"]
         logger.info(f"Done. {len(rows)} call(s) recorded, {len(captured)} contact(s) captured.")
         for row in captured:
+            phone = row.get("contact_phone") or ""
+            if phone and row.get("contact_extension"):
+                phone += f" x{row['contact_extension']}"
             logger.info(
                 f"  {row.get('contact_name')} ({row.get('contact_role')}) "
                 f"at {row.get('lead_company') or row.get('lead_phone')}: "
-                f"{row.get('contact_phone') or row.get('contact_email')}"
+                f"{row.get('contact_email') or '(no email)'} / {phone or '(no phone)'}"
             )
 
 

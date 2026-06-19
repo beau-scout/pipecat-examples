@@ -1,0 +1,21 @@
+# Voicemail: the call reaches an answering machine. Hailey recognizes the
+# recorded greeting, leaves a short message asking them to call RunScout's main
+# number back, and ends the call with reason "voicemail".
+name: voicemail
+
+judge:
+  modality: text
+  eval:
+    service: openai
+    model: gpt-4o-mini
+
+turns:
+  - user: "You've reached the main office at Oakwood Middle School. We can't take your call right now. Please leave a message after the tone. *beep*"
+    expect:
+      # Hailey leaves the callback message and ends the call, in order.
+      - event: response
+        eval: "leaves a brief voicemail saying she is calling from RunScout about school safety and asks them to call back 210-594-2600; does not try to converse with the recording"
+      - event: function_call
+        calls:
+          - name: end_call
+            args: { reason: voicemail }

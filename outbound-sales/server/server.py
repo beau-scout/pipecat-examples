@@ -16,16 +16,19 @@ All call data (room_url, token, dialout_settings) flows through the body paramet
 to ensure consistency between local and cloud deployments.
 """
 
+import asyncio
 import datetime
 import os
+import sys
 import uuid
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 import aiohttp
 import uvicorn
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
 from loguru import logger
 
 from server_utils import (
@@ -36,6 +39,7 @@ from server_utils import (
     start_bot_local,
     start_bot_production,
 )
+from apollo_utils import enroll_security_contact
 
 load_dotenv()
 
@@ -62,6 +66,48 @@ app = FastAPI(lifespan=lifespan)
 # each result is logged to the terminal and kept in memory while the server
 # runs. A real production app would save these to a database instead.
 CALL_RESULTS: dict[str, dict[str, str]] = {}
+
+SERVER_DIR = Path(__file__).parent
+PORT = int(os.getenv("PORT", "8080"))
+
+# The running batch campaign (dialer.py subprocess), driven from the control
+# page's Start/Stop buttons. Only one campaign runs at a time.
+CAMPAIGN: dict[str, object] = {"proc": None, "started_at": None}
+
+
+def _campaign_running() -> bool:
+    proc = CAMPAIGN["proc"]
+    return proc is not None and proc.returncode is None
+
+
+def _compute_stats() -> dict:
+    """Summarize CALL_RESULTS for the control page: totals, outcomes, contacts."""
+    outcomes: dict[str, int] = {}
+    contacts: list[dict] = []
+    for row in CALL_RESULTS.values():
+        outcome = row.get("outcome", "unknown")
+        outcomes[outcome] = outcomes.get(outcome, 0) + 1
+        if outcome == "contact_captured":
+            contacts.append(
+                {
+                    "school": row.get("lead_company", ""),
+                    "lead_phone": row.get("lead_phone", ""),
+                    "name": row.get("contact_name", ""),
+                    "role": row.get("contact_role", ""),
+                    "email": row.get("contact_email", ""),
+                    "phone": row.get("contact_phone", ""),
+                    "extension": row.get("contact_extension", ""),
+                    "verification": row.get("verification", ""),
+                    "timestamp": row.get("timestamp", ""),
+                }
+            )
+    contacts.sort(key=lambda c: c.get("timestamp", ""), reverse=True)
+    return {
+        "total_calls": len(CALL_RESULTS),
+        "contacts_captured": len(contacts),
+        "outcomes": outcomes,
+        "contacts": contacts,
+    }
 
 
 @app.post("/dialout")
@@ -147,6 +193,9 @@ async def handle_call_result(request: Request) -> JSONResponse:
     else:
         CALL_RESULTS[call_id] = row
         logger.info(f"Call {call_id} finished ({row.get('outcome')}): {row}")
+        # On a captured contact, push it to Apollo so the team can follow up.
+        # Best effort: enroll_security_contact never raises.
+        await enroll_security_contact(row)
     return JSONResponse({"status": "ok"})
 
 
@@ -166,11 +215,76 @@ async def health_check():
     return {"status": "healthy"}
 
 
+# ----------------- Control page ----------------- #
+
+
+@app.get("/")
+async def control_page():
+    """Serve the single-page control UI (Start/Stop the campaign, live stats)."""
+    return FileResponse(SERVER_DIR / "static" / "control.html")
+
+
+@app.get("/campaign/status")
+async def campaign_status():
+    """Whether a campaign is running, plus live stats for the control page."""
+    started_at = CAMPAIGN["started_at"]
+    return {
+        "running": _campaign_running(),
+        "started_at": started_at.isoformat() if started_at else None,
+        "stats": _compute_stats(),
+    }
+
+
+@app.post("/campaign/start")
+async def campaign_start():
+    """Start the batch dialer (dialer.py) as a background subprocess."""
+    if _campaign_running():
+        raise HTTPException(status_code=409, detail="A campaign is already running.")
+
+    proc = await asyncio.create_subprocess_exec(
+        sys.executable,
+        "dialer.py",
+        "--server",
+        f"http://localhost:{PORT}",
+        cwd=str(SERVER_DIR),
+    )
+    CAMPAIGN["proc"] = proc
+    CAMPAIGN["started_at"] = datetime.datetime.now()
+    logger.info(f"Campaign started (pid {proc.pid})")
+    return {"status": "started", "pid": proc.pid}
+
+
+@app.post("/campaign/stop")
+async def campaign_stop():
+    """Stop the running campaign. New calls stop; calls already placed finish."""
+    proc = CAMPAIGN["proc"]
+    if not _campaign_running():
+        return {"status": "not_running"}
+
+    proc.terminate()
+    try:
+        await asyncio.wait_for(proc.wait(), timeout=5)
+    except asyncio.TimeoutError:
+        proc.kill()
+    logger.info("Campaign stopped")
+    return {"status": "stopped"}
+
+
+@app.post("/results/clear")
+async def clear_results():
+    """Clear the in-memory results so the next campaign starts fresh stats."""
+    if _campaign_running():
+        raise HTTPException(status_code=409, detail="Stop the campaign before clearing results.")
+    count = len(CALL_RESULTS)
+    CALL_RESULTS.clear()
+    logger.info(f"Cleared {count} result(s)")
+    return {"status": "cleared", "cleared": count}
+
+
 # ----------------- Main ----------------- #
 
 
 if __name__ == "__main__":
-    # Run the server
-    port = int(os.getenv("PORT", "8080"))
-    logger.info(f"Starting server on port {port}")
-    uvicorn.run("server:app", host="0.0.0.0", port=port, reload=True)
+    logger.info(f"Starting server on port {PORT}")
+    logger.info(f"Control panel: http://localhost:{PORT}/")
+    uvicorn.run("server:app", host="0.0.0.0", port=PORT, reload=True)

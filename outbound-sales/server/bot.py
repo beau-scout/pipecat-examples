@@ -4,12 +4,15 @@
 # SPDX-License-Identifier: BSD 2-Clause License
 #
 
-"""outbound-sales - Hailey, an outbound sales voice agent.
+"""outbound-sales - Hailey, RunScout's school-safety outreach voice agent.
 
-Hailey calls a lead, introduces herself, and tries to reach the person who
-handles IT decisions. She either gets transferred or collects the decision
-maker's contact info, reports it to server.py (which logs it to the terminal),
-says thanks, and hangs up.
+Hailey calls a school or district main line, greets whoever answers, says she's
+calling from RunScout (runscout.ai), and asks who is in charge of safety and
+security. If asked why, she explains that RunScout connects to a school's
+existing camera systems to detect everyday incidents like student elopement or
+propped-open doors. She collects the security decision maker's contact info (or
+gets transferred), reports it to server.py, says thanks, and hangs up. On a
+captured contact, server.py enrolls them in an Apollo sequence for follow-up.
 
 Required AI services:
 - Deepgram (Speech-to-Text)
@@ -72,8 +75,12 @@ from server_utils import AgentRequest, DialoutSettings, Lead, report_result
 load_dotenv(override=True)
 
 # Lead used when running evals (`-t eval`), where there's no real call request.
-# Override it with `--runner-body lead.json` if a scenario needs a different lead.
-EVAL_LEAD = Lead(phone="+15550100001", name="Beau", company="Acme Robotics")
+# For school outreach the answerer's name is unknown; "company" carries the
+# school or district name. Override with `--runner-body lead.json` if needed.
+EVAL_LEAD = Lead(phone="+15550100001", company="Lincoln Elementary School")
+
+# RunScout's main number, left in a voicemail when Hailey reaches a machine.
+MAIN_CALLBACK_NUMBER = os.getenv("MAIN_CALLBACK_NUMBER", "210-594-2600")
 
 
 class DialoutManager:
@@ -175,6 +182,7 @@ class CallResult:
             "contact_name": contact.get("name", ""),
             "contact_role": contact.get("role", ""),
             "contact_phone": contact.get("phone", ""),
+            "contact_extension": contact.get("extension", ""),
             "contact_email": contact.get("email", ""),
             "notes": self.notes,
         }
@@ -182,9 +190,9 @@ class CallResult:
 
 def greeting_line(lead: Lead) -> str:
     """Hailey's opening line. Spoken via a canned TTSSpeakFrame, skipping the LLM."""
-    if lead.name:
-        return f"Hi, this is Hailey from Pipecat Labs. Am I speaking with {lead.name}?"
-    return "Hi, this is Hailey from Pipecat Labs. Who am I speaking with?"
+    if lead.company:
+        return f"Hi there, this is Hailey calling from RunScout dot A I. Have I reached {lead.company}?"
+    return "Hi there, this is Hailey calling from RunScout dot A I. How are you doing today?"
 
 
 class CannedGreetingGate(FrameProcessor):
@@ -228,30 +236,33 @@ class CannedGreetingGate(FrameProcessor):
 
 
 def system_prompt(lead: Lead) -> str:
-    if lead.name:
-        lead_line = f"The lead list says this number belongs to {lead.name}"
-        lead_line += f" at {lead.company}." if lead.company else "."
+    if lead.company:
+        place_line = f"You are calling {lead.company}."
     else:
-        lead_line = "You don't know the name of the person who will answer."
+        place_line = "You are calling a school or school district main line."
 
-    return f"""You are Hailey, a friendly sales development representative at Pipecat Labs. You are on an outbound phone call. {lead_line}
+    return f"""You are Hailey, a friendly representative calling on behalf of RunScout (runscout.ai). You are on an outbound phone call to a school or school district. {place_line} Whoever answers is most likely a front-office staffer, not the person you ultimately need.
 
 This is a real phone conversation: your replies are spoken aloud. Keep them short (one or two sentences), warm, and natural. Never use lists, emojis, or any formatting that can't be spoken.
 
-Your goal: find out who handles IT decisions at this company and get their contact information (name, role, and a phone number or email), or get transferred to them directly.
+Your goal: find out who is in charge of safety and security at this school or district, and get their name, role, and contact information. An email address is the most useful, so always ask for one; a direct phone number is a great bonus.
+
+What RunScout does (only explain if they ask why you're calling, or who you are): RunScout connects to a school's existing camera systems to automatically detect everyday safety incidents, such as a student leaving the building when they shouldn't (elopement) or a door being propped open. Keep it to a sentence or two.
 
 Follow this flow:
 1. The person answering speaks first, and your opening line ("{greeting_line(lead)}") is sent for you automatically. Don't repeat it; continue the conversation from their reply.
-2. Briefly explain why you're calling: Pipecat Labs helps companies add AI voice agents to their phone systems, and you'd love to share details with whoever runs IT.
-3. Ask who handles IT decisions and how to reach them.
-4. If they offer to transfer you, thank them briefly and stop talking. Do not introduce yourself again until the new person actually speaks. When they do, introduce yourself and continue from step 2. If you get transferred to the decision maker, you still want their direct contact info for follow-up.
-5. Once you have the decision maker's name, role, and a phone number or email, call save_contact_info.
+2. Warmly ask who is in charge of safety or security at the school or district, and the best way to reach them. Always ask for an email address, and a direct phone number. If the phone number goes through a switchboard, ask for the extension too.
+3. If they ask why you're calling or what RunScout is, give the one or two sentence explanation above, then return to asking who handles security.
+4. If they offer to transfer you, thank them briefly and stop talking. Do not introduce yourself again until the new person actually speaks. When they do, introduce yourself and continue from step 2. If you get transferred to the security person directly, you still want their direct email and phone for follow-up.
+5. Before saving, read the email address back to them out loud to confirm you have it spelled correctly, and confirm the phone number and any extension. Then call save_contact_info with the name, role, email, phone, and extension.
 6. Always end the call yourself: thank them, say goodbye, and then call end_call with the right reason.
 
 Rules:
+- If you reach a voicemail or answering machine (for example you hear a recorded greeting, an instruction to leave a message, or a beep, and no live person responds): wait for the beep, then leave a short, friendly message — "Hi, this is Hailey calling from RunScout about school safety. When you have a moment, please give us a call back at {MAIN_CALLBACK_NUMBER}. Thank you!" Then call end_call with reason "voicemail". Do not try to have a conversation with a recording.
 - If they decline, aren't interested, or ask to be removed from your list: apologize once, thank them, say goodbye, and call end_call with reason "refused". Never argue or push back.
 - If this is clearly a wrong number, apologize, say goodbye, and call end_call with reason "wrong_number".
 - Don't ask again for information you already have.
+- Capture the phone extension whenever there is one; people often give a main number plus an extension.
 - Never invent contact information. Only save what the person actually told you."""
 
 
@@ -301,17 +312,24 @@ async def run_bot(
     )
 
     async def save_contact_info(
-        params: FunctionCallParams, name: str, role: str, phone: str = "", email: str = ""
+        params: FunctionCallParams,
+        name: str,
+        role: str,
+        phone: str = "",
+        extension: str = "",
+        email: str = "",
     ):
-        """Save the IT decision maker's contact information.
+        """Save the school/district security decision maker's contact information.
 
-        Call this once the person on the call has told you who handles IT
-        decisions and given you at least one way to reach them.
+        Call this once the person on the call has told you who is in charge of
+        safety and security and given you at least one way to reach them. Read
+        the email back to confirm spelling before calling this.
 
         Args:
-            name: The decision maker's full name.
-            role: Their role, e.g. "IT Director" or "CTO".
-            phone: Their phone number, if given.
+            name: The security decision maker's full name.
+            role: Their role, e.g. "Director of Safety and Security" or "Principal".
+            phone: Their direct or main phone number, if given.
+            extension: The phone extension, if the number goes through a switchboard.
             email: Their email address, if given.
         """
         if not phone and not email:
@@ -319,7 +337,13 @@ async def run_bot(
                 {"status": "error", "message": "Need at least a phone number or an email."}
             )
             return
-        result.contact = {"name": name, "role": role, "phone": phone, "email": email}
+        result.contact = {
+            "name": name,
+            "role": role,
+            "phone": phone,
+            "extension": extension,
+            "email": email,
+        }
         logger.info(f"Call {call_id}: saved contact info for {name} ({role})")
         await params.result_callback({"status": "saved"})
 
@@ -328,7 +352,8 @@ async def run_bot(
 
         Args:
             reason: Why the call is ending. One of: "contact_captured",
-                "transferred_no_info", "refused", "wrong_number", "other".
+                "transferred_no_info", "refused", "wrong_number", "voicemail",
+                "other".
             notes: Optional one-line note about how the call went.
         """
         result.end_reason = reason
@@ -505,7 +530,7 @@ async def bot(runner_args: RunnerArguments):
         transport = DailyTransport(
             request.room_url,
             request.token,
-            "Hailey (Outbound Sales)",
+            "Hailey (RunScout School Safety)",
             params=DailyParams(
                 api_key=os.getenv("DAILY_API_KEY"),
                 audio_in_enabled=True,

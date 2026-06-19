@@ -1,8 +1,10 @@
-# Outbound Sales Bot
+# RunScout School Safety Outreach Bot
 
-Meet Hailey, an outbound sales agent built with Pipecat. She calls a list of leads in batches of 5 over Daily PSTN, introduces herself ("Hi, this is Hailey from Pipecat Labs. Am I speaking with Beau?"), and tries to reach the person who handles IT decisions. She either gets transferred or collects the decision maker's contact info, reports it to the server (which logs it to the terminal), says thanks, and hangs up.
+Meet Hailey, RunScout's school-safety outreach agent built with Pipecat. She calls a list of schools and districts in batches of 5 over Daily PSTN, greets whoever answers ("Hi there, this is Hailey calling from RunScout dot A I."), and asks who is in charge of safety and security. If asked why she's calling, she explains that RunScout connects to a school's existing camera systems to detect everyday incidents such as student elopement or propped-open doors. She collects the security decision maker's name, role, email, and phone (with extension) — reading the email back to confirm it — or gets transferred, then reports the contact to the server, says thanks, and hangs up.
 
-The example also shows the new **Pipecat evals** feature: the same bot runs in a text-only eval mode so you can test its behavior in seconds, with no phone calls and no audio.
+When a contact is captured, the server **validates it against the school's website domain and verifies it through Apollo enrichment**, then **enrolls the contact into an Apollo sequence** so a RunScout teammate follows up by email and phone.
+
+The example also shows the **Pipecat evals** feature: the same bot runs in a text-only eval mode so you can test its behavior in seconds, with no phone calls and no audio.
 
 This project was scaffolded with the Pipecat CLI:
 
@@ -18,13 +20,16 @@ pipecat init outbound-sales --bot-type telephony -t daily_pstn_dialout \
 leads.csv → dialer.py → server.py /dialout → Daily room + dial-out
                                               ↓
 server.py /call_result ← bot.py (Hailey) ← call answered
+        ↓
+  Apollo: verify + enroll in sequence
 ```
 
-1. `dialer.py` reads `leads.csv` and starts calls in batches of 5
-2. For each lead, `server.py` creates a Daily room with dial-out enabled and starts a bot
-3. The bot dials the lead's number; when they answer, Hailey runs the conversation
-4. Hailey saves contact info with the `save_contact_info` tool and hangs up with the `end_call` tool
-5. Every finished call reports one outcome row to `server.py`, which logs it to the terminal and keeps it in memory; the dialer polls `GET /results` to know when a batch is done, then starts the next batch. (This is a demo: a real production app would save outcomes to a database instead.)
+1. `dialer.py` reads `leads.csv` (schools and districts) and starts calls in batches of 5
+2. For each school, `server.py` creates a Daily room with dial-out enabled and starts a bot
+3. The bot dials the school's number; when they answer, Hailey asks who handles safety and security
+4. Hailey saves the security contact with the `save_contact_info` tool (name, role, email, phone, extension) and hangs up with the `end_call` tool
+5. Every finished call reports one outcome row to `server.py`, which logs it and keeps it in memory; the dialer polls `GET /results` to know when a batch is done, then starts the next batch
+6. On a captured contact, `server.py` verifies the email/phone through Apollo (and validates the email domain against the school's website), then enrolls the contact in an Apollo sequence for the team to follow up. (This is a demo: a real production app would also save outcomes to a database.)
 
 ## Configuration
 
@@ -85,8 +90,8 @@ Expected output:
 
 The scenarios live in `scenarios/`:
 
-- `happy_path.yaml`: the lead hands over the IT director's contact info
-- `transfer_path.yaml`: a gatekeeper transfers Hailey to the IT director
+- `happy_path.yaml`: the front office hands over the safety director's email and phone (with extension); Hailey reads the email back to confirm
+- `transfer_path.yaml`: the front office transfers Hailey to the district's safety director
 - `gatekeeper_refusal.yaml`: "take us off your list"; Hailey must not argue
 
 To iterate on a single scenario:
@@ -136,7 +141,7 @@ You'll need two terminal windows open:
 
 ## Run a Batch Campaign
 
-Edit `leads.csv` with real numbers (`phone,name,company`), then with both servers running:
+Edit `leads.csv` with real numbers (`phone,school`), then with both servers running:
 
 ```bash
 uv run dialer.py
@@ -144,9 +149,28 @@ uv run dialer.py
 
 The dialer calls in batches of 5, waits for every call in a batch to finish (or time out after 6 minutes), then starts the next batch. Leads that already have a result are skipped, so you can stop and re-run the dialer while the server stays up.
 
-Each result row is logged to the server terminal and has: timestamp, call_id, lead phone/name/company, outcome, contact name/role/phone/email, notes. Outcomes are `contact_captured`, `refused`, `wrong_number`, `transferred_no_info`, `other`, `hung_up`, `no_answer`, `dialout_error`, `timeout`, or `error`.
+Each result row is logged to the server terminal and has: timestamp, call_id, lead phone/school, outcome, contact name/role/phone/extension/email, an Apollo verification note, and notes. Outcomes are `contact_captured`, `refused`, `wrong_number`, `transferred_no_info`, `voicemail`, `other`, `hung_up`, `no_answer`, `dialout_error`, `timeout`, or `error`.
+
+> **Voicemail note**: when Hailey reaches a voicemail or answering machine she leaves a short message asking them to call RunScout's main number back, then ends the call with outcome `voicemail`. Detection is prompt-based (the model recognizes the recorded greeting from the transcript); this is best effort, not carrier answering-machine detection. A true "no answer" where the line is never picked up ends as `no_answer` with no message left, since there is no audio channel to leave one on.
 
 > **Production note**: results live in the server's memory and are gone when it restarts. That's on purpose: this is a demo, and the in-memory store plus terminal logging stand in for a database. In a real production app, have `POST /call_result` write to a database, and remember that on Pipecat Cloud each bot runs in its own container, so `SERVER_URL` must point at a server the bots can reach (not localhost).
+
+## Apollo Integration
+
+When a call captures a security contact, `server.py` hands the outcome row to `apollo_utils.py`, which:
+
+1. **Verifies the contact through Apollo enrichment** (People Match), which returns the school's official website/domain plus Apollo's verification of the email and any phone it has on file.
+2. **Validates the captured email** against the school/district website domain, recording a `email_domain_match` of `yes`/`no`/`unknown` in the result row's verification note.
+3. **Creates (or updates) the contact** in Apollo with the verified email, phone (with extension), title, and school, then **adds them to an Apollo sequence**.
+
+This runs on the machine where `server.py` lives, so your `APOLLO_API_KEY` stays there and never ships to the cloud bot. Configure it with these environment variables (see `.env.example`):
+
+- `APOLLO_API_KEY` — your Apollo REST API key. **Leave blank to disable the whole integration** (calls still work; contacts just aren't enrolled).
+- `APOLLO_SEQUENCE_ID` — the sequence to enroll into. Defaults to "Runscout School Safety — K-12 Outreach".
+- `APOLLO_EMAIL_ACCOUNT_ID` — the mailbox to send from. Defaults to `xiomara@runscout.ai`.
+- `APOLLO_ENROLL_STATUS` — `paused` (default; held for a teammate to review before any email sends) or `active` (sequence starts immediately).
+
+Each enrichment costs 1 Apollo credit per matched person (0 if not found). Enrollment is best effort: an Apollo failure is logged but never blocks call-result recording.
 
 ## Environment Configuration
 
