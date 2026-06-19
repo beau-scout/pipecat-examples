@@ -38,7 +38,21 @@ reconcile them later.
 
 The badge is laid out with print CSS at exactly 3in × 3in (`@page { size: 3in 3in; margin: 0 }`):
 event name on top, the guest's name large in the middle (auto-shrinks for
-long names), company below it, and an ATTENDEE footer.
+long names), company below it, and an ATTENDEE footer with a QR code.
+
+### QR code
+
+Each badge includes a QR code (bottom-right of the footer) encoding the
+guest as a **vCard** — name, company, and email. Attendees can scan each
+other's badges with a phone camera to save the contact, and you can scan
+them at session doors for attendance. UTF-8 names (accents, non-Latin
+characters) are supported.
+
+Toggle the QR code on or off from the admin panel (**Badge QR Code: On/Off**);
+the setting is remembered per kiosk. The QR is generated fully offline by a
+vendored copy of the MIT-licensed
+[`qrcode-generator`](https://github.com/kazuhikoarase/qrcode-generator)
+library (`qrcode.js`) — no network or external service is used.
 
 For a smooth kiosk experience with a label printer (Dymo, Brother QL,
 Zebra, etc.):
@@ -81,3 +95,16 @@ Without those flags the normal print dialog appears — fine for testing.
   (`IDLE_RESET_MS`).
 - A physical USB keyboard also works for search if you prefer it over the
   on-screen keyboard.
+
+## Files
+
+- `index.html` — the entire app (HTML, CSS, and JS in one file)
+- `qrcode.js` — vendored MIT-licensed QR code generator (offline badge QR codes)
+- `sample-guests.csv` — example guest list for testing the CSV upload
+- `README.md` — this file
+
+## Third-party
+
+`qrcode.js` is [`qrcode-generator`](https://github.com/kazuhikoarase/qrcode-generator)
+by Kazuhiko Arase, used under the MIT license. The license header is retained
+at the top of the file.

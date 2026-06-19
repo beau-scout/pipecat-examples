@@ -368,13 +368,31 @@
     #printArea .badge-company { font-size: 14pt; color: #333; word-break: break-word; }
 
     #printArea .badge-footer {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 0.12in;
+      border-top: 2.5pt solid #000;
+      padding-top: 0.07in;
+    }
+
+    #printArea .badge-footer.no-qr { justify-content: center; }
+
+    #printArea .badge-role {
       font-size: 11pt;
       font-weight: 700;
       letter-spacing: 4px;
       text-transform: uppercase;
-      border-top: 2.5pt solid #000;
-      padding-top: 0.07in;
+      text-align: left;
     }
+
+    #printArea #badgeQr {
+      flex: 0 0 auto;
+      width: 0.85in;
+      height: 0.85in;
+    }
+
+    #printArea #badgeQr svg { width: 100%; height: 100%; display: block; }
   }
 </style>
 </head>
@@ -467,6 +485,7 @@
     <input type="file" id="csvFile" accept=".csv,text/csv" style="display:none">
     <button class="btn btn-accent btn-block" id="renameBtn">Set Event Name</button>
     <button class="btn btn-secondary btn-block" id="exportBtn">Export Check-In Report (CSV)</button>
+    <button class="btn btn-secondary btn-block" id="qrToggleBtn">Badge QR Code: On</button>
     <button class="btn btn-secondary btn-block" id="testPrintBtn">Print Test Badge</button>
     <button class="btn btn-danger btn-block" id="resetBtn">Reset All Check-Ins</button>
     <button class="btn btn-secondary btn-block" id="adminClose" style="margin-bottom:0">Close</button>
@@ -480,9 +499,13 @@
     <div class="badge-name" id="badgeName"></div>
     <div class="badge-company" id="badgeCompany"></div>
   </div>
-  <div class="badge-footer">Attendee</div>
+  <div class="badge-footer" id="badgeFooter">
+    <span class="badge-role">Attendee</span>
+    <span id="badgeQr"></span>
+  </div>
 </div>
 
+<script src="qrcode.js"></script>
 <script>
 (function () {
   "use strict";
@@ -492,6 +515,7 @@
   var IDLE_RESET_MS = 60000;
   var LS_GUESTS = "vmk_guests";
   var LS_EVENT = "vmk_event_name";
+  var LS_QR = "vmk_qr_enabled";
 
   var SAMPLE_GUESTS = [
     { name: "Ada Lovelace", company: "Analytical Engines Inc." },
@@ -504,6 +528,7 @@
   // guests: [{ name, company, email, checkedInAt }]
   var guests = loadGuests();
   var eventName = localStorage.getItem(LS_EVENT) || "the Conference";
+  var qrEnabled = localStorage.getItem(LS_QR) !== "off";
   var selectedIdx = -1;
   var pinEntry = "";
   var idleTimer = null;
@@ -638,7 +663,7 @@
   // Shared "you're in" path: print the badge and show the success screen.
   function finishCheckIn(g) {
     setActiveField(searchInput);
-    printBadge(g.name, g.company);
+    printBadge(g.name, g.company, g.email);
     $("successName").textContent = "You're checked in, " + g.name.split(" ")[0] + "!";
     openModal("successModal");
     renderResults();
@@ -673,7 +698,7 @@
   }
 
   // ---------- Badge printing ----------
-  function printBadge(name, company) {
+  function printBadge(name, company, email) {
     $("badgeEvent").textContent = eventName;
     $("badgeName").textContent = name;
     $("badgeCompany").textContent = company || "";
@@ -683,7 +708,41 @@
     if (name.length > 24) size = 19;
     if (name.length > 34) size = 15;
     $("badgeName").style.fontSize = size + "pt";
+    renderBadgeQr(name, company, email);
     window.print();
+  }
+
+  // Build a vCard so a phone camera can scan the badge to save the contact.
+  function buildVCard(name, company, email) {
+    var parts = name.trim().split(/\s+/);
+    var last = parts.length > 1 ? parts.pop() : "";
+    var first = parts.join(" ");
+    var v = "BEGIN:VCARD\r\nVERSION:3.0\r\n";
+    v += "N:" + last + ";" + first + "\r\n";
+    v += "FN:" + name + "\r\n";
+    if (company) v += "ORG:" + company + "\r\n";
+    if (email) v += "EMAIL:" + email + "\r\n";
+    v += "END:VCARD";
+    return v;
+  }
+
+  function renderBadgeQr(name, company, email) {
+    var holder = $("badgeQr");
+    var footer = $("badgeFooter");
+    holder.innerHTML = "";
+    if (!qrEnabled || typeof qrcode === "undefined") {
+      footer.classList.add("no-qr");
+      return;
+    }
+    try {
+      var qr = qrcode(0, "M"); // type 0 = auto-size, medium error correction
+      qr.addData(buildVCard(name, company, email));
+      qr.make();
+      holder.innerHTML = qr.createSvgTag({ scalable: true, margin: 0 });
+      footer.classList.remove("no-qr");
+    } catch (e) {
+      footer.classList.add("no-qr"); // never let a QR failure block printing
+    }
   }
 
   // ---------- On-screen keyboard ----------
@@ -956,7 +1015,16 @@
 
   $("exportBtn").addEventListener("click", exportCsv);
   $("testPrintBtn").addEventListener("click", function () {
-    printBadge("Test Attendee", "Badge Alignment Check");
+    printBadge("Test Attendee", "Badge Alignment Check", "test@example.com");
+  });
+
+  function renderQrToggle() {
+    $("qrToggleBtn").textContent = "Badge QR Code: " + (qrEnabled ? "On" : "Off");
+  }
+  $("qrToggleBtn").addEventListener("click", function () {
+    qrEnabled = !qrEnabled;
+    localStorage.setItem(LS_QR, qrEnabled ? "on" : "off");
+    renderQrToggle();
   });
 
   $("resetBtn").addEventListener("click", function () {
@@ -980,6 +1048,7 @@
 
   // ---------- Init ----------
   renderTitle();
+  renderQrToggle();
   buildKeyboard("keyboard");
   buildKeyboard("walkKeyboard");
   buildPinPad();
