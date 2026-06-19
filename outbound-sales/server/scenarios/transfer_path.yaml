@@ -1,6 +1,7 @@
 # Transfer path: the front office transfers Hailey to the district's safety
-# director. Hailey re-introduces herself, gets the director's direct email and
-# phone, saves it, and ends the call.
+# director. Because she has now reached the security decision maker, Hailey
+# explains what RunScout does and asks for a good time for a senior rep to
+# follow up, captures the contact (with that time), and ends the call.
 name: transfer_path
 
 judge:
@@ -15,11 +16,6 @@ turns:
       - event: response
         eval: "says she is calling from RunScout and asks who is in charge of safety or security at the school or district"
 
-  - user: "What's this regarding?"
-    expect:
-      - event: response
-        eval: "briefly explains RunScout detects everyday safety incidents like student elopement or propped-open doors using existing cameras, and asks who handles security"
-
   - user: "That would be our director of safety. Hold on, I'll transfer you."
     expect:
       - event: response
@@ -28,9 +24,9 @@ turns:
   - user: "Hi, this is Dana Smith, director of safety and security. Who am I speaking with?"
     expect:
       - event: response
-        eval: "introduces herself again as calling from RunScout and explains why she is calling"
+        eval: "introduces herself as calling from RunScout and, since she has reached the security decision maker, explains what RunScout does (detecting incidents like student elopement or propped-open doors using existing cameras) and asks for a good time for a senior representative to speak with them"
 
-  - user: "Sure, email me at dana.smith@maplegrove.k12.ca.us and my direct line is 555-0148."
+  - user: "Sure, we could talk next Tuesday afternoon. Email me at dana.smith@maplegrove.k12.ca.us."
     expect:
       # Hailey reads the email back to confirm before saving.
       - event: response
@@ -38,8 +34,8 @@ turns:
 
   - user: "That's right."
     expect:
-      # Expectations match in order: Hailey saves the contact, speaks her
-      # thanks, then hangs up.
+      # Expectations match in order: Hailey saves the contact (including the
+      # follow-up time), thanks Dana, then hangs up.
       - event: function_call
         calls:
           - name: save_contact_info

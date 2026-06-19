@@ -184,6 +184,7 @@ class CallResult:
             "contact_phone": contact.get("phone", ""),
             "contact_extension": contact.get("extension", ""),
             "contact_email": contact.get("email", ""),
+            "contact_best_time": contact.get("best_time", ""),
             "notes": self.notes,
         }
 
@@ -245,16 +246,22 @@ def system_prompt(lead: Lead) -> str:
 
 This is a real phone conversation: your replies are spoken aloud. Keep them short (one or two sentences), warm, and natural. Never use lists, emojis, or any formatting that can't be spoken.
 
-Your goal: find out who is in charge of safety and security at this school or district, and get their name, role, and contact information. An email address is the most useful, so always ask for one; a direct phone number is a great bonus.
+Your goal is to reach the person in charge of safety and security at this school or district. How the call goes depends on who you are talking to.
 
-What RunScout does (only explain if they ask why you're calling, or who you are): RunScout connects to a school's existing camera systems to automatically detect everyday safety incidents, such as a student leaving the building when they shouldn't (elopement) or a door being propped open. Keep it to a sentence or two.
+What RunScout does (your one or two sentence explanation): RunScout connects to a school's existing camera systems to automatically detect everyday safety incidents, such as a student leaving the building when they shouldn't (elopement) or a door being propped open.
 
 Follow this flow:
 1. The person answering speaks first, and your opening line ("{greeting_line(lead)}") is sent for you automatically. Don't repeat it; continue the conversation from their reply.
-2. Warmly ask who is in charge of safety or security at the school or district, and the best way to reach them. Always ask for an email address, and a direct phone number. If the phone number goes through a switchboard, ask for the extension too.
-3. If they ask why you're calling or what RunScout is, give the one or two sentence explanation above, then return to asking who handles security.
-4. If they offer to transfer you, thank them briefly and stop talking. Do not introduce yourself again until the new person actually speaks. When they do, introduce yourself and continue from step 2. If you get transferred to the security person directly, you still want their direct email and phone for follow-up.
-5. Before saving, read the email address back to them out loud to confirm you have it spelled correctly, and confirm the phone number and any extension. Then call save_contact_info with the name, role, email, phone, and extension.
+2. Warmly ask who is in charge of safety or security at the school or district. Early on, figure out whether the person you are talking to IS that security person, or is someone else (like front-office staff).
+3. If you are talking to someone who is NOT the security person:
+   - Ask for the security person's name and the best way to reach them: always ask for an email address, and a direct phone number, plus an extension if it goes through a switchboard.
+   - If they offer to transfer you, thank them briefly and stop talking. Do not speak again until the new person actually speaks. When they do, introduce yourself and find out whether they are the security decision maker, then continue with the right branch.
+   - If they only ask why you're calling, give your one or two sentence explanation of RunScout, then return to asking who handles security.
+4. If you ARE talking with the person in charge of safety and security (you reached them directly, or were transferred to them):
+   - Proactively tell them, in a sentence or two, what RunScout does (don't wait to be asked).
+   - Then ask for a good time for one of our senior representatives to speak with them in more detail. Get a specific day and time window if you can.
+   - Capture their name, role, email, direct phone, extension, and the good time they gave you.
+5. Before saving, read the email address back to them out loud to confirm you have it spelled correctly, and confirm the phone number and any extension. Then call save_contact_info with the name, role, email, phone, extension, and best_time (the time they gave for a senior rep to follow up, if any).
 6. Always end the call yourself: thank them, say goodbye, and then call end_call with the right reason.
 
 Rules:
@@ -318,12 +325,13 @@ async def run_bot(
         phone: str = "",
         extension: str = "",
         email: str = "",
+        best_time: str = "",
     ):
         """Save the school/district security decision maker's contact information.
 
-        Call this once the person on the call has told you who is in charge of
-        safety and security and given you at least one way to reach them. Read
-        the email back to confirm spelling before calling this.
+        Call this once you know who is in charge of safety and security and have
+        at least one way to reach them. Read the email back to confirm spelling
+        before calling this.
 
         Args:
             name: The security decision maker's full name.
@@ -331,6 +339,9 @@ async def run_bot(
             phone: Their direct or main phone number, if given.
             extension: The phone extension, if the number goes through a switchboard.
             email: Their email address, if given.
+            best_time: When a senior rep should follow up, if you reached the
+                security person directly and they gave a good day/time. Leave
+                blank if you only collected a referral from a gatekeeper.
         """
         if not phone and not email:
             await params.result_callback(
@@ -343,6 +354,7 @@ async def run_bot(
             "phone": phone,
             "extension": extension,
             "email": email,
+            "best_time": best_time,
         }
         logger.info(f"Call {call_id}: saved contact info for {name} ({role})")
         await params.result_callback({"status": "saved"})

@@ -84,10 +84,10 @@
     <p class="section-title">Captured security contacts</p>
     <table>
       <thead>
-        <tr><th>School / District</th><th>Name</th><th>Role</th><th>Email</th><th>Phone</th><th>Verification</th><th>When</th></tr>
+        <tr><th>School / District</th><th>Name</th><th>Role</th><th>Email</th><th>Phone</th><th>Best time to talk</th><th>Verification</th><th>When</th></tr>
       </thead>
       <tbody id="contacts">
-        <tr><td colspan="7" class="empty">No contacts captured yet.</td></tr>
+        <tr><td colspan="8" class="empty">No contacts captured yet.</td></tr>
       </tbody>
     </table>
   </div>
@@ -158,10 +158,11 @@
               <td>${esc(c.role) || "—"}</td>
               <td class="mono">${esc(c.email) || "—"}</td>
               <td class="mono">${fmtPhone(c)}</td>
+              <td>${esc(c.best_time) || "—"}</td>
               <td>${vmatchHtml(c.verification)}</td>
               <td>${fmtTime(c.timestamp)}</td>
             </tr>`).join("")
-        : `<tr><td colspan="7" class="empty">No contacts captured yet.</td></tr>`;
+        : `<tr><td colspan="8" class="empty">No contacts captured yet.</td></tr>`;
     }
 
     function flashError(msg) {

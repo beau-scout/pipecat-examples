@@ -160,10 +160,12 @@ async def main():
             phone = row.get("contact_phone") or ""
             if phone and row.get("contact_extension"):
                 phone += f" x{row['contact_extension']}"
+            best_time = row.get("contact_best_time")
+            when = f" — follow up: {best_time}" if best_time else ""
             logger.info(
                 f"  {row.get('contact_name')} ({row.get('contact_role')}) "
                 f"at {row.get('lead_company') or row.get('lead_phone')}: "
-                f"{row.get('contact_email') or '(no email)'} / {phone or '(no phone)'}"
+                f"{row.get('contact_email') or '(no email)'} / {phone or '(no phone)'}{when}"
             )
 
 

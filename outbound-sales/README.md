@@ -26,8 +26,8 @@ server.py /call_result ← bot.py (Hailey) ← call answered
 
 1. `dialer.py` reads `leads.csv` (schools and districts) and starts calls in batches of 5
 2. For each school, `server.py` creates a Daily room with dial-out enabled and starts a bot
-3. The bot dials the school's number; when they answer, Hailey asks who handles safety and security
-4. Hailey saves the security contact with the `save_contact_info` tool (name, role, email, phone, extension) and hangs up with the `end_call` tool
+3. The bot dials the school's number; when they answer, Hailey asks who handles safety and security. If she's talking to a gatekeeper she collects the security person's contact info; if she's transferred to (or reaches) the security decision maker directly, she explains what RunScout does and asks for a good time for a senior rep to follow up
+4. Hailey saves the security contact with the `save_contact_info` tool (name, role, email, phone, extension, and the best follow-up time) and hangs up with the `end_call` tool
 5. Every finished call reports one outcome row to `server.py`, which logs it and keeps it in memory; the dialer polls `GET /results` to know when a batch is done, then starts the next batch
 6. On a captured contact, `server.py` verifies the email/phone through Apollo (and validates the email domain against the school's website), then enrolls the contact in an Apollo sequence for the team to follow up. (This is a demo: a real production app would also save outcomes to a database.)
 
@@ -149,7 +149,7 @@ uv run dialer.py
 
 The dialer calls in batches of 5, waits for every call in a batch to finish (or time out after 6 minutes), then starts the next batch. Leads that already have a result are skipped, so you can stop and re-run the dialer while the server stays up.
 
-Each result row is logged to the server terminal and has: timestamp, call_id, lead phone/school, outcome, contact name/role/phone/extension/email, an Apollo verification note, and notes. Outcomes are `contact_captured`, `refused`, `wrong_number`, `transferred_no_info`, `voicemail`, `other`, `hung_up`, `no_answer`, `dialout_error`, `timeout`, or `error`.
+Each result row is logged to the server terminal and has: timestamp, call_id, lead phone/school, outcome, contact name/role/phone/extension/email, the best follow-up time (when Hailey reached the security person directly), an Apollo verification note, and notes. Outcomes are `contact_captured`, `refused`, `wrong_number`, `transferred_no_info`, `voicemail`, `other`, `hung_up`, `no_answer`, `dialout_error`, `timeout`, or `error`.
 
 > **Voicemail note**: when Hailey reaches a voicemail or answering machine she leaves a short message asking them to call RunScout's main number back, then ends the call with outcome `voicemail`. Detection is prompt-based (the model recognizes the recorded greeting from the transcript); this is best effort, not carrier answering-machine detection. A true "no answer" where the line is never picked up ends as `no_answer` with no message left, since there is no audio channel to leave one on.
 

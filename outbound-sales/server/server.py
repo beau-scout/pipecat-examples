@@ -97,6 +97,7 @@ def _compute_stats() -> dict:
                     "email": row.get("contact_email", ""),
                     "phone": row.get("contact_phone", ""),
                     "extension": row.get("contact_extension", ""),
+                    "best_time": row.get("contact_best_time", ""),
                     "verification": row.get("verification", ""),
                     "timestamp": row.get("timestamp", ""),
                 }
