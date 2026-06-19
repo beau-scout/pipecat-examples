@@ -17,10 +17,12 @@ to ensure consistency between local and cloud deployments.
 """
 
 import asyncio
+import csv
 import datetime
 import os
 import sys
 import uuid
+from collections import Counter
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -72,12 +74,28 @@ PORT = int(os.getenv("PORT", "7867"))
 
 # The running batch campaign (dialer.py subprocess), driven from the control
 # page's Start/Stop buttons. Only one campaign runs at a time.
-CAMPAIGN: dict[str, object] = {"proc": None, "started_at": None}
+CAMPAIGN: dict[str, object] = {"proc": None, "started_at": None, "region": None, "limit": None}
+
+LEADS_CSV = SERVER_DIR / "leads.csv"
 
 
 def _campaign_running() -> bool:
     proc = CAMPAIGN["proc"]
     return proc is not None and proc.returncode is None
+
+
+def _regions() -> list[dict]:
+    """Region names and their lead counts, read from leads.csv (for the picker)."""
+    try:
+        with open(LEADS_CSV, newline="") as f:
+            counts = Counter(
+                (row.get("region") or "Unspecified").strip()
+                for row in csv.DictReader(f)
+                if row.get("phone")
+            )
+    except FileNotFoundError:
+        return []
+    return [{"region": r, "count": c} for r, c in sorted(counts.items())]
 
 
 def _compute_stats() -> dict:
@@ -225,6 +243,12 @@ async def control_page():
     return FileResponse(SERVER_DIR / "static" / "control.html")
 
 
+@app.get("/regions")
+async def regions():
+    """Available lead regions and their counts, for the control page picker."""
+    return {"regions": _regions(), "total": sum(r["count"] for r in _regions())}
+
+
 @app.get("/campaign/status")
 async def campaign_status():
     """Whether a campaign is running, plus live stats for the control page."""
@@ -232,27 +256,35 @@ async def campaign_status():
     return {
         "running": _campaign_running(),
         "started_at": started_at.isoformat() if started_at else None,
+        "region": CAMPAIGN["region"],
+        "limit": CAMPAIGN["limit"],
         "stats": _compute_stats(),
     }
 
 
 @app.post("/campaign/start")
-async def campaign_start():
-    """Start the batch dialer (dialer.py) as a background subprocess."""
+async def campaign_start(region: str | None = None, limit: int | None = None):
+    """Start the batch dialer (dialer.py) as a background subprocess.
+
+    Optional query params scope the run: ``region`` calls only that region's
+    leads; ``limit`` caps the number of new calls placed this run.
+    """
     if _campaign_running():
         raise HTTPException(status_code=409, detail="A campaign is already running.")
 
-    proc = await asyncio.create_subprocess_exec(
-        sys.executable,
-        "dialer.py",
-        "--server",
-        f"http://localhost:{PORT}",
-        cwd=str(SERVER_DIR),
-    )
+    cmd = [sys.executable, "dialer.py", "--server", f"http://localhost:{PORT}"]
+    if region:
+        cmd += ["--region", region]
+    if limit:
+        cmd += ["--limit", str(limit)]
+
+    proc = await asyncio.create_subprocess_exec(*cmd, cwd=str(SERVER_DIR))
     CAMPAIGN["proc"] = proc
     CAMPAIGN["started_at"] = datetime.datetime.now()
-    logger.info(f"Campaign started (pid {proc.pid})")
-    return {"status": "started", "pid": proc.pid}
+    CAMPAIGN["region"] = region
+    CAMPAIGN["limit"] = limit
+    logger.info(f"Campaign started (pid {proc.pid}, region={region or 'all'}, limit={limit or 'none'})")
+    return {"status": "started", "pid": proc.pid, "region": region, "limit": limit}
 
 
 @app.post("/campaign/stop")

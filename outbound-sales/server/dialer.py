@@ -128,9 +128,14 @@ async def main():
     parser = argparse.ArgumentParser(description="Batch dialer for the RunScout school-safety bot")
     parser.add_argument("--leads", default="leads.csv", help="Path to the leads CSV")
     parser.add_argument("--server", default="http://localhost:7867", help="server.py base URL")
+    parser.add_argument("--region", default=None, help="Only call leads whose region matches")
+    parser.add_argument("--limit", type=int, default=None, help="Cap the number of new calls this run")
     args = parser.parse_args()
 
     leads = read_leads(Path(args.leads))
+    if args.region:
+        leads = [lead for lead in leads if (lead.get("region") or "") == args.region]
+        logger.info(f"Filtered to region '{args.region}': {len(leads)} lead(s)")
 
     async with aiohttp.ClientSession() as session:
         try:
@@ -141,6 +146,8 @@ async def main():
 
         already_called = {row["lead_phone"] for row in results.values()}
         todo = [lead for lead in leads if lead["phone"] not in already_called]
+        if args.limit:
+            todo = todo[: args.limit]
         skipped = len(leads) - len(todo)
         if skipped:
             logger.info(f"Skipping {skipped} lead(s) that already have a result")

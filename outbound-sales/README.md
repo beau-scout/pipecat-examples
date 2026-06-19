@@ -141,13 +141,15 @@ You'll need two terminal windows open:
 
 ## Run a Batch Campaign
 
-Edit `leads.csv` with real numbers (`phone,school`), then with both servers running:
+Edit `leads.csv` with real numbers. Columns are `phone,school,region` (the optional `region` column groups leads so you can dial one state/segment at a time). With both servers running:
 
 ```bash
-uv run dialer.py
+uv run dialer.py                                  # call everything
+uv run dialer.py --region "Southern Nevada Charter"   # one region only
+uv run dialer.py --limit 25                        # cap new calls this run
 ```
 
-The dialer calls in batches of 5, waits for every call in a batch to finish (or time out after 6 minutes), then starts the next batch. Leads that already have a result are skipped, so you can stop and re-run the dialer while the server stays up.
+The dialer calls in batches of 5, waits for every call in a batch to finish (or time out after 6 minutes), then starts the next batch. Leads that already have a result are skipped, so you can stop and re-run the dialer while the server stays up. From the **control panel** (`/`), the Region dropdown and "Max calls" box do the same thing without the command line — pick a region and a cap, then hit Start.
 
 Each result row is logged to the server terminal and has: timestamp, call_id, lead phone/school, outcome, contact name/role/phone/extension/email, the best follow-up time (when Hailey reached the security person directly), an Apollo verification note, and notes. Outcomes are `contact_captured`, `refused`, `wrong_number`, `transferred_no_info`, `voicemail`, `other`, `hung_up`, `no_answer`, `dialout_error`, `timeout`, or `error`.
 
