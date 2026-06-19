@@ -1,0 +1,12 @@
+# Pipecat Cloud deployment config.
+# This deploys via Pipecat Cloud Build (no own Docker registry needed):
+# `image` is intentionally omitted so `pipecat cloud deploy` builds from the
+# local Dockerfile and build context. Run the deploy from this `server/` dir.
+# - agent_name: the agent name in your Pipecat Cloud account
+# - secret_set: the secret set created with `pipecat cloud secrets set`
+agent_name = "outbound-sales"
+secret_set = "outbound-sales-secrets"
+agent_profile = "agent-1x"
+
+[scaling]
+	min_agents = 1
