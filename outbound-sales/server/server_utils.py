@@ -154,10 +154,12 @@ async def create_daily_room(
         room_name = room_data["name"]
         room_url = room_data["url"]
 
-        # Create a meeting token for the bot
+        # Create a meeting token for the bot. is_owner is required so the bot
+        # has admin privileges to start dial-out and cloud recording.
         token_payload = {
             "properties": {
                 "room_name": room_name,
+                "is_owner": True,
                 "enable_recording": "cloud-audio-only",
                 "start_cloud_recording": True,
             }
