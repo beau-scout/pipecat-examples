@@ -14,17 +14,18 @@ This module provides data models and functions for:
 
 import os
 import time
+from dataclasses import dataclass
 
 import aiohttp
 from fastapi import HTTPException, Request
 from loguru import logger
-from pipecat.runner.daily import DailyRoomConfig, configure
-from pipecat.transports.daily.utils import (
-    DailyMeetingTokenProperties,
-    DailyRoomProperties,
-    DailyRoomSipParams,
-)
 from pydantic import BaseModel
+
+
+@dataclass
+class DailyRoomConfig:
+    room_url: str
+    token: str
 
 
 class DialoutSettings(BaseModel):
@@ -115,45 +116,64 @@ async def dialout_request_from_request(request: Request) -> DialoutRequest:
 async def create_daily_room(
     dialout_request: DialoutRequest, session: aiohttp.ClientSession
 ) -> DailyRoomConfig:
-    """Create a Daily room configured for PSTN dial-out.
+    """Create a Daily room configured for PSTN dial-out via the Daily REST API."""
+    daily_api_key = os.getenv("DAILY_API_KEY")
+    if not daily_api_key:
+        raise HTTPException(status_code=500, detail="DAILY_API_KEY not set")
 
-    Args:
-        dialout_request: Dial-out request containing phone number and settings
-        session: Shared aiohttp session for making HTTP requests
+    headers = {
+        "Authorization": f"Bearer {daily_api_key}",
+        "Content-Type": "application/json",
+    }
 
-    Returns:
-        DailyRoomConfig: Configuration object with room_url and token
-
-    Raises:
-        HTTPException: If room creation fails
-    """
     try:
-        # Same properties configure() would build for a dial-out room, plus
-        # audio-only cloud recording. start_cloud_recording on the bot's token
-        # starts the recording automatically when the bot joins, before the
-        # phone leg connects, so the callee never hears a recording
-        # announcement. Recordings are listed and downloaded via Daily's
-        # REST API.
-        room_properties = DailyRoomProperties(
-            exp=time.time() + 2 * 60 * 60,
-            eject_at_room_exp=True,
-            enable_dialout=True,
-            enable_recording="cloud-audio-only",
-            sip=DailyRoomSipParams(
-                display_name=dialout_request.dialout_settings.phone_number,
-                video=False,
-                sip_mode="dial-in",
-                num_endpoints=1,
-            ),
-            start_video_off=True,
-        )
-        token_properties = DailyMeetingTokenProperties(
-            enable_recording="cloud-audio-only",
-            start_cloud_recording=True,
-        )
-        return await configure(
-            session, room_properties=room_properties, token_properties=token_properties
-        )
+        # Create the room
+        room_payload = {
+            "properties": {
+                "exp": time.time() + 2 * 60 * 60,
+                "eject_at_room_exp": True,
+                "enable_dialout": True,
+                "enable_recording": "cloud-audio-only",
+                "sip": {
+                    "display_name": dialout_request.dialout_settings.phone_number,
+                    "video": False,
+                    "sip_mode": "dial-in",
+                    "num_endpoints": 1,
+                },
+                "start_video_off": True,
+            }
+        }
+        async with session.post(
+            "https://api.daily.co/v1/rooms", headers=headers, json=room_payload
+        ) as resp:
+            if resp.status != 200:
+                text = await resp.text()
+                raise RuntimeError(f"Room creation failed ({resp.status}): {text}")
+            room_data = await resp.json()
+
+        room_name = room_data["name"]
+        room_url = room_data["url"]
+
+        # Create a meeting token for the bot
+        token_payload = {
+            "properties": {
+                "room_name": room_name,
+                "enable_recording": "cloud-audio-only",
+                "start_cloud_recording": True,
+            }
+        }
+        async with session.post(
+            "https://api.daily.co/v1/meeting-tokens", headers=headers, json=token_payload
+        ) as resp:
+            if resp.status != 200:
+                text = await resp.text()
+                raise RuntimeError(f"Token creation failed ({resp.status}): {text}")
+            token_data = await resp.json()
+
+        return DailyRoomConfig(room_url=room_url, token=token_data["token"])
+
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error creating Daily room: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to create Daily room: {str(e)}")
