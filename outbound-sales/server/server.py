@@ -68,7 +68,7 @@ app = FastAPI(lifespan=lifespan)
 CALL_RESULTS: dict[str, dict[str, str]] = {}
 
 SERVER_DIR = Path(__file__).parent
-PORT = int(os.getenv("PORT", "8080"))
+PORT = int(os.getenv("PORT", "7867"))
 
 # The running batch campaign (dialer.py subprocess), driven from the control
 # page's Start/Stop buttons. Only one campaign runs at a time.

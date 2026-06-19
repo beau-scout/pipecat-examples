@@ -191,7 +191,7 @@ async def report_result(row: dict[str, str]) -> None:
     Args:
         row: The outcome row, as built by CallResult.to_row() in bot.py
     """
-    server_url = os.getenv("SERVER_URL", "http://localhost:8080")
+    server_url = os.getenv("SERVER_URL", "http://localhost:7867")
     try:
         async with aiohttp.ClientSession() as session:
             async with session.post(f"{server_url}/call_result", json=row) as response:

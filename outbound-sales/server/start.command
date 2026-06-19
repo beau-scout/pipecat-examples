@@ -18,7 +18,7 @@ source .venv/bin/activate
 uv pip install -q fastapi uvicorn aiohttp loguru python-dotenv pydantic
 
 # Open the control panel once the server has had a moment to start.
-( sleep 2; open "http://localhost:${PORT:-8080}/" ) &
+( sleep 2; open "http://localhost:${PORT:-7867}/" ) &
 
-echo "Starting control panel at http://localhost:${PORT:-8080}/"
+echo "Starting control panel at http://localhost:${PORT:-7867}/"
 python server.py

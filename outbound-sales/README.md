@@ -116,7 +116,7 @@ You'll need two terminal windows open:
    uv run server.py
    ```
 
-   This runs on port 8080 and handles dial-out requests.
+   This runs on port 7867 and handles dial-out requests.
 
 2. **Terminal 2**: Start the bot server:
 
@@ -129,7 +129,7 @@ You'll need two terminal windows open:
 3. **Test a single call**
 
    ```bash
-   curl -X POST "http://localhost:8080/dialout" \
+   curl -X POST "http://localhost:7867/dialout" \
      -H "Content-Type: application/json" \
      -d '{
        "dialout_settings": { "phone_number": "+15551234567" },

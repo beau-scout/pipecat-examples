@@ -16,7 +16,7 @@ stays up.
 
 Usage::
 
-    uv run dialer.py [--leads leads.csv] [--server http://localhost:8080]
+    uv run dialer.py [--leads leads.csv] [--server http://localhost:7867]
 
 Note: results live in server.py's memory and are logged to its terminal. This
 is demo plumbing; in a real production app the bot would report outcomes to a
@@ -127,7 +127,7 @@ async def run_batch(session: aiohttp.ClientSession, server_url: str, batch: list
 async def main():
     parser = argparse.ArgumentParser(description="Batch dialer for the RunScout school-safety bot")
     parser.add_argument("--leads", default="leads.csv", help="Path to the leads CSV")
-    parser.add_argument("--server", default="http://localhost:8080", help="server.py base URL")
+    parser.add_argument("--server", default="http://localhost:7867", help="server.py base URL")
     args = parser.parse_args()
 
     leads = read_leads(Path(args.leads))

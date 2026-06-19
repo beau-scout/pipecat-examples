@@ -7,7 +7,7 @@ Hailey, RunScout's school-safety outreach voice agent built with Pipecat. The di
 All code lives in `server/`. Run every command from there with `uv run`.
 
 - `bot.py`: Hailey's pipeline, tools (`save_contact_info`, `end_call`), dial-out retry logic, voicemail handling, and the eval entry point
-- `server.py`: FastAPI server (port 8080); `/dialout` starts calls, `/call_result` records outcomes + triggers Apollo enrollment, `/results` is polled by the dialer, plus the control panel (`/`, `/campaign/start|stop`, `/campaign/status`, `/results/clear`)
+- `server.py`: FastAPI server (port 7867); `/dialout` starts calls, `/call_result` records outcomes + triggers Apollo enrollment, `/results` is polled by the dialer, plus the control panel (`/`, `/campaign/start|stop`, `/campaign/status`, `/results/clear`)
 - `server_utils.py`: data models, Daily room creation (direct REST API, owner token), bot starting, `report_result`
 - `apollo_utils.py`: Apollo verification (People Match) + email-domain validation + sequence enrollment; no-op unless `APOLLO_API_KEY` is set
 - `dialer.py`: batch dialer, 5 calls at a time
@@ -26,9 +26,9 @@ uv run bot.py -t eval                          # then: uv run pipecat eval run s
 
 The bot exits when Hailey hangs up, so restart `bot.py -t eval` between single-scenario runs.
 
-Real calls (local bot): two terminals — `uv run server.py` (port 8080) and `uv run bot.py -t daily` (port 7860), plus a purchased Daily phone number and dial-out enablement.
+Real calls (local bot): two terminals — `uv run server.py` (port 7867) and `uv run bot.py -t daily` (port 7860), plus a purchased Daily phone number and dial-out enablement.
 
-Control panel: with `server.py` running, open `http://localhost:8080/` to start/stop a batch campaign and watch live stats. `start.command` (double-click on macOS) does the venv setup, starts the server, and opens the page. In production the bot runs on Pipecat Cloud, so `bot.py` is not run locally; only `server.py` (control panel + webhook) runs on the operator's machine, and `SERVER_URL` must be reachable by the cloud bots.
+Control panel: with `server.py` running, open `http://localhost:7867/` to start/stop a batch campaign and watch live stats. `start.command` (double-click on macOS) does the venv setup, starts the server, and opens the page. In production the bot runs on Pipecat Cloud, so `bot.py` is not run locally; only `server.py` (control panel + webhook) runs on the operator's machine, and `SERVER_URL` must be reachable by the cloud bots.
 
 ## Rules and gotchas
 
