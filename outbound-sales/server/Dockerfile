@@ -13,11 +13,12 @@ ENV UV_LINK_MODE=copy
 # TODO: remove once pipecat-ai 1.4.0 ships on PyPI and pyproject.toml points at it.
 RUN apt-get update && apt-get install -y --no-install-recommends git && rm -rf /var/lib/apt/lists/*
 
-# Install the project's dependencies using the lockfile and settings
+# Install the project's dependencies.
+# uv.lock is gitignored so we can't bind-mount it in the cloud build context;
+# copy pyproject.toml and let uv resolve at build time instead.
+COPY pyproject.toml .
 RUN --mount=type=cache,target=/root/.cache/uv \
-    --mount=type=bind,source=uv.lock,target=uv.lock \
-    --mount=type=bind,source=pyproject.toml,target=pyproject.toml \
-    uv sync --locked --no-install-project --no-dev
+    uv sync --no-install-project --no-dev
 
 # Copy the application code
 COPY ./server_utils.py server_utils.py
