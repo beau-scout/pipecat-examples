@@ -24,6 +24,16 @@ The CSV needs a header row with a `name` column (or `first name` /
 columns — the format most registration platforms (Eventbrite, Luma, etc.)
 export. See `sample-guests.csv` for an example.
 
+## Walk-in registration
+
+Guests who aren't on the pre-registered list can check themselves in at the
+door. When a search returns no match (or from the welcome screen), a **walk-in**
+button opens a short form with its own on-screen keyboard. The guest enters
+their name and (optionally) company, and the app adds them to the list, checks
+them in, and prints their badge just like a pre-registered guest. Walk-ins are
+flagged in the exported check-in report (`walk_in` column) so you can
+reconcile them later.
+
 ## Badge printing (3" × 3" labels)
 
 The badge is laid out with print CSS at exactly 3in × 3in (`@page { size: 3in 3in; margin: 0 }`):
@@ -65,6 +75,8 @@ Without those flags the normal print dialog appears — fine for testing.
   Export the check-in report before clearing browser data.
 - Guests who are already checked in can tap their name again to reprint a
   lost badge (it won't double-count them).
+- Walk-in guests are added to the same list and persist with everyone else;
+  they're marked `walk_in=yes` in the exported report.
 - The screen resets to the welcome state after 60 seconds of inactivity
   (`IDLE_RESET_MS`).
 - A physical USB keyboard also works for search if you prefer it over the

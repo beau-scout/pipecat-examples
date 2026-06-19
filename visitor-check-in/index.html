@@ -284,6 +284,42 @@
 
   .pin-key:active { background: var(--accent-dark); }
 
+  /* ---------- Walk-in registration ---------- */
+  .walkin-cta { margin-top: 48px; }
+  .walkin-cta .btn { font-size: 30px; display: inline-block; width: auto; }
+
+  .walk-modal { width: 1240px; max-width: 96vw; text-align: left; }
+  .walk-modal h2, .walk-modal .sub { text-align: center; }
+
+  .field-label {
+    display: block;
+    font-size: 26px;
+    color: var(--text-dim);
+    margin: 22px 0 10px;
+  }
+
+  .walk-input {
+    width: 100%;
+    background: var(--bg);
+    border: 3px solid var(--panel-light);
+    border-radius: 16px;
+    color: var(--text);
+    font-size: 42px;
+    font-weight: 600;
+    padding: 0 24px;
+    height: 92px;
+    outline: none;
+  }
+
+  .walk-input::placeholder { color: var(--text-dim); font-weight: 400; }
+  .walk-input.field-active { border-color: var(--accent); }
+
+  .kb-compact { margin: 28px 0; display: flex; flex-direction: column; gap: 12px; }
+  .kb-compact .kb-row { gap: 12px; }
+  .kb-compact .kb-key { width: 100px; height: 80px; font-size: 32px; }
+  .kb-compact .kb-key.wide { width: 190px; font-size: 26px; }
+  .kb-compact .kb-key.space { width: 460px; }
+
   /* ---------- Print: 3x3 inch badge ---------- */
   #printArea { display: none; }
 
@@ -384,6 +420,23 @@
     <h2 id="successName">You're checked in!</h2>
     <p class="sub">Your badge is printing. Enjoy the conference!</p>
     <button class="btn btn-primary" id="successDone" style="width:100%">Done</button>
+  </div>
+</div>
+
+<!-- Walk-in registration -->
+<div class="modal-overlay" id="walkModal">
+  <div class="modal walk-modal">
+    <h2>Walk-In Check-In</h2>
+    <p class="sub">Not on the list? Add your details to check in and print a badge.</p>
+    <label class="field-label" for="walkName">Your name</label>
+    <input id="walkName" class="walk-input" type="text" placeholder="Full name" readonly>
+    <label class="field-label" for="walkCompany">Company / organization</label>
+    <input id="walkCompany" class="walk-input" type="text" placeholder="Optional" readonly>
+    <div id="walkKeyboard" class="kb-compact"></div>
+    <div class="btn-row">
+      <button class="btn btn-secondary" id="walkCancel">Cancel</button>
+      <button class="btn btn-primary" id="walkOk">Check In &amp; Print Badge</button>
+    </div>
   </div>
 </div>
 
@@ -497,7 +550,10 @@
 
     if (!q) {
       resultsEl.innerHTML =
-        '<div id="emptyState">Start typing your name on the keyboard below</div>';
+        '<div id="emptyState">Start typing your name on the keyboard below' +
+        '<div class="walkin-cta"><button class="btn btn-accent" id="walkInBtn">' +
+        "Not registered? Check in as a walk-in</button></div></div>";
+      wireWalkInBtn("");
       return;
     }
 
@@ -512,10 +568,13 @@
     });
 
     if (!matches.length) {
+      var typed = searchInput.value.trim();
       resultsEl.innerHTML =
         '<div id="emptyState">No registered guests match "' +
-        escapeHtml(searchInput.value.trim()) +
-        '"<br>Please see the registration desk for help.</div>';
+        escapeHtml(typed) +
+        '"<div class="walkin-cta"><button class="btn btn-accent" id="walkInBtn">' +
+        "Check in as a walk-in</button></div></div>";
+      wireWalkInBtn(titleCase(typed));
       return;
     }
 
@@ -541,6 +600,17 @@
     return d.innerHTML;
   }
 
+  function titleCase(s) {
+    return s.replace(/\S+/g, function (w) {
+      return w.charAt(0).toUpperCase() + w.slice(1).toLowerCase();
+    });
+  }
+
+  function wireWalkInBtn(prefill) {
+    var btn = $("walkInBtn");
+    if (btn) btn.addEventListener("click", function () { openWalkIn(prefill); });
+  }
+
   function selectGuest(i) {
     selectedIdx = i;
     var g = guests[i];
@@ -562,10 +632,44 @@
       saveGuests();
     }
     closeModal("confirmModal");
+    finishCheckIn(g);
+  }
+
+  // Shared "you're in" path: print the badge and show the success screen.
+  function finishCheckIn(g) {
+    setActiveField(searchInput);
     printBadge(g.name, g.company);
     $("successName").textContent = "You're checked in, " + g.name.split(" ")[0] + "!";
     openModal("successModal");
     renderResults();
+  }
+
+  // ---------- Walk-in registration ----------
+  function openWalkIn(prefillName) {
+    $("walkName").value = prefillName || "";
+    $("walkCompany").value = "";
+    setActiveField($("walkName"));
+    openModal("walkModal");
+  }
+
+  function submitWalkIn() {
+    var name = $("walkName").value.trim();
+    if (!name) {
+      setActiveField($("walkName"));
+      $("walkName").placeholder = "Please enter a name";
+      return;
+    }
+    var g = {
+      name: name,
+      company: $("walkCompany").value.trim(),
+      email: "",
+      checkedInAt: new Date().toISOString(),
+      walkIn: true
+    };
+    guests.push(g);
+    saveGuests();
+    closeModal("walkModal");
+    finishCheckIn(g);
   }
 
   // ---------- Badge printing ----------
@@ -589,8 +693,8 @@
     ["Z", "X", "C", "V", "B", "N", "M", "-", "'"]
   ];
 
-  function buildKeyboard() {
-    var kb = $("keyboard");
+  function buildKeyboard(containerId) {
+    var kb = $(containerId);
     KB_ROWS.forEach(function (row) {
       var rowEl = document.createElement("div");
       rowEl.className = "kb-row";
@@ -621,19 +725,34 @@
     return b;
   }
 
+  // The on-screen keyboard types into whichever field is "active": the main
+  // search box, or one of the walk-in fields when that modal is open.
+  var activeField = searchInput;
+
+  function setActiveField(field) {
+    activeField = field;
+    [searchInput, $("walkName"), $("walkCompany")].forEach(function (f) {
+      if (f) f.classList.toggle("field-active", f === field);
+    });
+  }
+
+  function afterFieldChange() {
+    if (activeField === searchInput) renderResults();
+  }
+
   function typeChar(c) {
-    searchInput.value += c;
-    renderResults();
+    activeField.value += c;
+    afterFieldChange();
   }
 
   function backspace() {
-    searchInput.value = searchInput.value.slice(0, -1);
-    renderResults();
+    activeField.value = activeField.value.slice(0, -1);
+    afterFieldChange();
   }
 
   function clearSearch() {
-    searchInput.value = "";
-    renderResults();
+    activeField.value = "";
+    afterFieldChange();
   }
 
   // ---------- Idle reset (kiosk returns to start) ----------
@@ -642,6 +761,7 @@
     idleTimer = setTimeout(function () {
       closeAllModals();
       pinEntry = "";
+      setActiveField(searchInput);
       clearSearch();
     }, IDLE_RESET_MS);
   }
@@ -769,10 +889,11 @@
   }
 
   function exportCsv() {
-    var lines = ["name,company,email,checked_in,checked_in_at"];
+    var lines = ["name,company,email,checked_in,checked_in_at,walk_in"];
     guests.forEach(function (g) {
       lines.push([g.name, g.company || "", g.email || "",
-        g.checkedInAt ? "yes" : "no", g.checkedInAt || ""
+        g.checkedInAt ? "yes" : "no", g.checkedInAt || "",
+        g.walkIn ? "yes" : "no"
       ].map(csvField).join(","));
     });
     var blob = new Blob([lines.join("\r\n")], { type: "text/csv" });
@@ -794,8 +915,17 @@
   $("confirmOk").addEventListener("click", checkIn);
   $("successDone").addEventListener("click", function () {
     closeModal("successModal");
+    setActiveField(searchInput);
     clearSearch();
   });
+
+  $("walkOk").addEventListener("click", submitWalkIn);
+  $("walkCancel").addEventListener("click", function () {
+    closeModal("walkModal");
+    setActiveField(searchInput);
+  });
+  $("walkName").addEventListener("click", function () { setActiveField($("walkName")); });
+  $("walkCompany").addEventListener("click", function () { setActiveField($("walkCompany")); });
 
   $("adminBtn").addEventListener("click", function () {
     pinEntry = "";
@@ -837,16 +967,21 @@
     renderResults();
   });
 
-  // Support physical keyboards too (USB keyboard plugged into the kiosk)
+  // Support physical keyboards too (USB keyboard plugged into the kiosk).
+  // Allowed on the main screen and in the walk-in modal; blocked by others.
   document.addEventListener("keydown", function (e) {
-    if (document.querySelector(".modal-overlay.open")) return;
+    if (document.querySelector(".modal-overlay.open:not(#walkModal)")) return;
+    if (e.key === "Enter" && $("walkModal").classList.contains("open")) {
+      submitWalkIn(); e.preventDefault(); return;
+    }
     if (e.key === "Backspace") { backspace(); e.preventDefault(); }
     else if (e.key.length === 1) { typeChar(e.key); e.preventDefault(); }
   });
 
   // ---------- Init ----------
   renderTitle();
-  buildKeyboard();
+  buildKeyboard("keyboard");
+  buildKeyboard("walkKeyboard");
   buildPinPad();
   renderResults();
   resetIdle();
