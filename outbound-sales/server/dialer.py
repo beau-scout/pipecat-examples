@@ -65,6 +65,8 @@ async def dial_lead(session: aiohttp.ClientSession, server_url: str, lead: dict,
             "name": lead.get("name") or None,
             # The school/district name lands on the lead's "company" field.
             "company": lead.get("school") or lead.get("company") or None,
+            # Region drives recording policy (no recording in two-party states).
+            "region": lead.get("region") or None,
         },
         "call_id": call_id,
     }

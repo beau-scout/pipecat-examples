@@ -47,11 +47,28 @@ class Lead(BaseModel):
         phone: The lead's phone number
         name: The lead's name, if known
         company: The lead's company, if known
+        region: The campaign region (e.g. "California Charter"); drives
+            recording policy for two-party-consent states.
     """
 
     phone: str
     name: str | None = None
     company: str | None = None
+    region: str | None = None
+
+
+# Substrings of regions/states where we must NOT record (two-party / all-party
+# consent). California is two-party consent, so its calls are not recorded.
+# Override with the NO_RECORD_REGIONS env var (comma-separated substrings).
+def _no_record_matches() -> list[str]:
+    raw = os.getenv("NO_RECORD_REGIONS", "California")
+    return [s.strip().lower() for s in raw.split(",") if s.strip()]
+
+
+def _should_record(region: str | None) -> bool:
+    """False when the call's region is a no-record (two-party-consent) state."""
+    r = (region or "").lower()
+    return not any(m in r for m in _no_record_matches())
 
 
 class DialoutRequest(BaseModel):
@@ -126,25 +143,29 @@ async def create_daily_room(
         "Content-Type": "application/json",
     }
 
+    region = dialout_request.lead.region if dialout_request.lead else None
+    record = _should_record(region)
+    if not record:
+        logger.info(f"Recording disabled for region '{region}' (two-party consent)")
+
     try:
         # Create the room
-        room_payload = {
-            "properties": {
-                "exp": time.time() + 2 * 60 * 60,
-                "eject_at_room_exp": True,
-                "enable_dialout": True,
-                "enable_recording": "cloud-audio-only",
-                "sip": {
-                    "display_name": dialout_request.dialout_settings.phone_number,
-                    "video": False,
-                    "sip_mode": "dial-in",
-                    "num_endpoints": 1,
-                },
-                "start_video_off": True,
-            }
+        room_props = {
+            "exp": time.time() + 2 * 60 * 60,
+            "eject_at_room_exp": True,
+            "enable_dialout": True,
+            "sip": {
+                "display_name": dialout_request.dialout_settings.phone_number,
+                "video": False,
+                "sip_mode": "dial-in",
+                "num_endpoints": 1,
+            },
+            "start_video_off": True,
         }
+        if record:
+            room_props["enable_recording"] = "cloud-audio-only"
         async with session.post(
-            "https://api.daily.co/v1/rooms", headers=headers, json=room_payload
+            "https://api.daily.co/v1/rooms", headers=headers, json={"properties": room_props}
         ) as resp:
             if resp.status != 200:
                 text = await resp.text()
@@ -155,15 +176,12 @@ async def create_daily_room(
         room_url = room_data["url"]
 
         # Create a meeting token for the bot. is_owner is required so the bot
-        # has admin privileges to start dial-out and cloud recording.
-        token_payload = {
-            "properties": {
-                "room_name": room_name,
-                "is_owner": True,
-                "enable_recording": "cloud-audio-only",
-                "start_cloud_recording": True,
-            }
-        }
+        # has admin privileges to start dial-out (and recording, where enabled).
+        token_props = {"room_name": room_name, "is_owner": True}
+        if record:
+            token_props["enable_recording"] = "cloud-audio-only"
+            token_props["start_cloud_recording"] = True
+        token_payload = {"properties": token_props}
         async with session.post(
             "https://api.daily.co/v1/meeting-tokens", headers=headers, json=token_payload
         ) as resp:

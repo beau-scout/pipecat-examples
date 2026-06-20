@@ -41,6 +41,6 @@ Control panel: with `server.py` running, open `http://localhost:7867/` to start/
 - In `end_call`, `worker.flush_pipeline()` must run before pushing `EndWorkerFrame`. The eval websocket server closes as soon as the EndFrame passes the input transport, so anything still queued would be lost.
 - The first reply is canned (`CannedGreetingGate`), skipping the LLM round-trip. Eval runs push it as LLM response frames because text-mode evals never see TTS output.
 - Smart Turn's silence fallback is capped at 1s (`stop_secs=1.0`) on purpose; don't raise it back to the 3s default.
-- Calls are recorded with Daily cloud recording, started from the bot's meeting token. There is no local recording code.
+- Calls are recorded with Daily cloud recording, started from the bot's meeting token. There is no local recording code. Recording is suppressed per-region for two-party-consent states via `_should_record` in `server_utils.py` (default: California; configurable with `NO_RECORD_REGIONS`). The lead's `region` is passed from the dialer through `/dialout` to drive this.
 - **Before deploying to Pipecat Cloud**, change the fields in `pcc-deploy.toml`: `agent_name`, `image` (it points at the example author's Docker Hub repo), and `secret_set` are all account-specific.
 - Python deps come from `pyproject.toml` via `uv sync`; `pipecat-ai` installs from the GitHub `main` branch until 1.4.0 ships on PyPI.
