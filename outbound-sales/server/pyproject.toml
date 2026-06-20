@@ -4,10 +4,13 @@ version = "0.1.0"
 description = "Voice AI bot built with Pipecat"
 requires-python = ">=3.11"
 dependencies = [
+    # Pinned to a specific pipecat main commit for reproducible builds: the CLI
+    # (with `pipecat eval`) and the eval transport are only on main until 1.4.0
+    # ships on PyPI. Pinning the rev (instead of @main) stops a future rebuild
+    # from floating onto a newer, possibly breaking main.
     # TODO: switch to "pipecat-ai[cli,cartesia,daily,deepgram,openai,runner,silero]>=1.4.0"
-    # once 1.4.0 is on PyPI. The CLI (with `pipecat eval`) and the eval transport
-    # are only on main until then.
-    "pipecat-ai[cli,cartesia,daily,deepgram,openai,runner,silero] @ git+https://github.com/pipecat-ai/pipecat.git@main",
+    # once 1.4.0 is on PyPI.
+    "pipecat-ai[cli,cartesia,daily,deepgram,openai,runner,silero] @ git+https://github.com/pipecat-ai/pipecat.git@6725945b38b2239452d9599eaf1e818eda7d1d19",
     "pipecatcloud",
 ]
 

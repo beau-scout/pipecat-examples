@@ -439,6 +439,9 @@ async def run_bot(
         ),
         # Logs exact user-stopped-speaking to bot-started-speaking latency
         observers=[UserBotLatencyObserver()],
+        # Honor the runner's idle timeout (the dial-out handlers below still
+        # drive normal call teardown; this is the backstop for a stuck call).
+        idle_timeout_secs=runner_args.pipeline_idle_timeout_secs,
     )
 
     # Dial-out only applies to real calls; eval runs get minimal handlers below.
