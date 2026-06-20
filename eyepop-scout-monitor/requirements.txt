@@ -1,0 +1,12 @@
+# EyePop Scout Monitor — runtime dependencies
+# Python 3.11+ required (EyePop SDK requires >=3.11)
+
+eyepop==1.19.0            # EyePop.ai inference SDK
+opencv-python-headless>=4.9.0   # RTSP/video frame capture (FFmpeg backend)
+numpy>=1.26.0
+fastapi>=0.110.0
+uvicorn[standard]>=0.29.0
+python-dotenv>=1.0.0     # load secrets from .env
+PyYAML>=6.0              # config.yaml
+pydantic>=2.6.0          # settings models (also pulled in by eyepop/fastapi)
+httpx>=0.27.0            # optional alert webhooks

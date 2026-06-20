@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>EyePop Scout Monitor</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <header>
+    <h1>EyePop Scout Monitor</h1>
+    <div class="status">
+      <span id="conn" class="pill pill-off">camera: …</span>
+      <span id="mock" class="pill pill-hidden">MOCK MODE</span>
+      <label class="mute"><input type="checkbox" id="sound" checked /> sound</label>
+    </div>
+  </header>
+
+  <main>
+    <section class="video">
+      <img id="stream" src="/stream" alt="camera stream" />
+      <div class="counts" id="counts"></div>
+      <div class="actions">
+        <button id="calibrate">Capture “doors closed” reference</button>
+      </div>
+      <div id="errors" class="errors"></div>
+    </section>
+
+    <aside class="alerts">
+      <div class="alerts-head">
+        <h2>Alerts</h2>
+        <button id="clear">clear</button>
+      </div>
+      <ul id="alert-list"></ul>
+    </aside>
+  </main>
+
+  <audio id="beep" preload="auto"
+    src="data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA="></audio>
+  <script src="/static/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,21 @@
+{
+  "_comment": "Optional in-code Pop definition for person + demographics. By default the app uses whatever Pop is bound to EYEPOP_POP_ID in your dashboard (recommended: the 'Person w/ Demographic Data' template). Point inference.person_pop_json at a copy of this file to push it via set_pop() instead. Confirm ability ids against your EyePop account before relying on it.",
+  "components": [
+    {
+      "type": "inference",
+      "ability": "eyepop.person:latest",
+      "categoryName": "person",
+      "confidenceThreshold": 0.5,
+      "forward": {
+        "operator": { "type": "crop" },
+        "targets": [
+          {
+            "type": "inference",
+            "ability": "eyepop.person.age:latest",
+            "categoryName": "age-range"
+          }
+        ]
+      }
+    }
+  ]
+}

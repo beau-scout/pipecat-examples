@@ -1,0 +1,72 @@
+# EyePop Scout Monitor configuration.
+# Copy to "config.yaml" and adjust. Secrets live in .env, not here.
+
+camera:
+  # Source can be:
+  #   - an RTSP URL from your Axis camera, e.g.
+  #     rtsp://user:pass@192.168.1.50/axis-media/media.amp?videocodec=h264
+  #   - a path to a local video file (great for testing)
+  #   - a webcam index as a string, e.g. "0"
+  source: "0"
+  rtsp_transport: tcp        # tcp is more reliable than udp for Axis over LAN
+  reconnect_delay_s: 3.0     # wait before reconnecting after a stream drop
+  stream_fps: 15             # max FPS pushed to the browser preview
+
+inference:
+  interval_s: 1.0            # seconds between EyePop inferences (controls cost)
+  confidence_threshold: 0.5  # min person confidence to keep
+  mock: false               # true = synthetic detections, no API/camera needed
+  # Optional path to a Pop JSON to push via set_pop(); if null, the Pop bound
+  # to EYEPOP_POP_ID in the dashboard is used as-is.
+  person_pop_json: null
+
+age:
+  category: "age-range"      # EyePop class category that carries age
+  adult_min_age: 18          # >= this age (years) is treated as an adult
+  # Explicit raw labels that always mean "child" (case-insensitive). Useful if
+  # your model emits non-numeric labels like "child"/"minor".
+  child_labels: ["child", "minor", "kid", "baby", "infant", "toddler"]
+
+grouping:
+  # Two people are linked into a group when the distance between their box
+  # centers is <= proximity_factor * (mean person box height). Scales with how
+  # close/large people appear, so far-apart people are not grouped.
+  proximity_factor: 1.6
+  min_group_size: 2
+
+doors:
+  enabled: false             # turn on once configured (see README)
+  mode: roi_threshold        # "roi_threshold" (no model) or "eyepop" (model)
+
+  # --- roi_threshold mode ---
+  # Define door regions and a baseline "closed" reference frame. Openness is
+  # measured as the mean absolute difference inside the ROI vs the reference.
+  reference_image: null      # path to a captured frame with all doors CLOSED
+  open_threshold: 18.0       # mean abs pixel diff (0-255) above which = OPEN
+  consecutive_frames: 3      # frames a door must stay open before alerting
+  rois: []
+  #   - name: "Front Door"
+  #     # rectangle as [x, y, width, height] in pixels of the source frame
+  #     rect: [820, 240, 180, 420]
+
+  # --- eyepop mode ---
+  # Run a dedicated EyePop Pop that detects doors and classifies open/closed.
+  door_pop_id: null          # falls back to EYEPOP_DOOR_POP_ID env if null
+  door_pop_json: null        # optional Pop JSON to set_pop on the door endpoint
+  door_label: "door"         # object classLabel to treat as a door
+  open_class: "open"         # class value that means the door is open
+  open_category: "state"     # class category carrying open/closed
+
+alerts:
+  default_cooldown_s: 20     # min seconds between repeats of the same alert
+  webhook_url: null          # optional: POST each alert as JSON here
+  rules:
+    child_detected:   { enabled: true }
+    child_alone:      { enabled: true }
+    child_with_group: { enabled: false }
+    group_detected:   { enabled: false, min_size: 3 }
+    door_open:        { enabled: true }
+
+server:
+  host: "0.0.0.0"
+  port: 8000
