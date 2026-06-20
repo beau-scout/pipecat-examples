@@ -175,6 +175,7 @@ async def _create_or_update_contact(
     api_key: str,
     row: dict[str, str],
     verified: dict[str, str],
+    account_id: str | None = None,
 ) -> str | None:
     """Create (or update, if Apollo matches an existing record) the contact."""
     first_name, last_name = _split_name(row.get("contact_name", ""))
@@ -187,6 +188,8 @@ async def _create_or_update_contact(
         # The school or district name rides along on the lead's "company" field.
         "organization_name": row.get("lead_company", ""),
         "website_url": verified.get("school_website", ""),
+        # Link the contact to the school's tracked Account when we have one.
+        "account_id": account_id or "",
         "label_names": ["RunScout School Security Bot"],
     }
     # Drop empty fields so we don't overwrite existing Apollo data with blanks.
@@ -231,6 +234,45 @@ async def _add_to_sequence(
         return True
 
 
+async def _ensure_account(
+    session: aiohttp.ClientSession, api_key: str, school_name: str, phone: str, website: str
+) -> str | None:
+    """Find or create the Apollo Account (org) for the school. Returns its id.
+
+    Searches first so a school that already exists isn't duplicated; only
+    creates a new account when there's no name match.
+    """
+    if not school_name:
+        return None
+    try:
+        async with session.post(
+            f"{APOLLO_BASE_URL}/accounts/search",
+            headers=_headers(api_key),
+            json={"q_organization_name": school_name, "per_page": 10},
+        ) as resp:
+            if resp.status in (200, 201):
+                data = await resp.json()
+                target = school_name.strip().lower()
+                for acct in data.get("accounts", []):
+                    if (acct.get("name") or "").strip().lower() == target:
+                        return acct.get("id")
+    except Exception as e:
+        logger.warning(f"Apollo account search error: {e}")
+
+    payload = {"name": school_name, "phone": phone or "", "domain": _domain_of_url(website)}
+    payload = {k: v for k, v in payload.items() if v}
+    try:
+        async with session.post(
+            f"{APOLLO_BASE_URL}/accounts", headers=_headers(api_key), json=payload
+        ) as resp:
+            if resp.status in (200, 201):
+                return ((await resp.json()).get("account") or {}).get("id")
+            logger.warning(f"Apollo account create failed ({resp.status}): {await resp.text()}")
+    except Exception as e:
+        logger.warning(f"Apollo account create error: {e}")
+    return None
+
+
 async def enroll_security_contact(row: dict[str, str]) -> None:
     """Verify the captured contact against Apollo + the school site, then enroll.
 
@@ -265,7 +307,26 @@ async def enroll_security_contact(row: dict[str, str]) -> None:
             row["notes"] = f"{existing_notes} | {verified['note']}".strip(" |")
             logger.info(f"Apollo: {name} — {verified['note']}")
 
-            contact_id = await _create_or_update_contact(session, api_key, row, verified)
+            # Only create/track the school as an Apollo Account once a meeting
+            # is set (Hailey captured a good time for a senior rep to follow up).
+            account_id = None
+            if row.get("contact_best_time"):
+                account_id = await _ensure_account(
+                    session,
+                    api_key,
+                    row.get("lead_company", ""),
+                    row.get("lead_phone", ""),
+                    verified.get("school_website", ""),
+                )
+                if account_id:
+                    logger.info(
+                        f"Apollo: account tracked for {row.get('lead_company', '')} "
+                        f"(meeting {row['contact_best_time']}) [{account_id}]"
+                    )
+
+            contact_id = await _create_or_update_contact(
+                session, api_key, row, verified, account_id
+            )
             if not contact_id:
                 return
             added = await _add_to_sequence(
