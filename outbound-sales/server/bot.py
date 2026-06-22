@@ -16,7 +16,7 @@ captured contact, server.py enrolls them in an Apollo sequence for follow-up.
 
 Required AI services:
 - Deepgram (Speech-to-Text)
-- OpenAI (LLM)
+- Anthropic / Claude (LLM)
 - Cartesia (Text-to-Speech)
 
 Run a real call (see README for the full flow)::
@@ -62,7 +62,7 @@ from pipecat.runner.utils import create_transport
 from pipecat.services.cartesia.tts import CartesiaTTSService
 from pipecat.services.deepgram.stt import DeepgramSTTService
 from pipecat.services.llm_service import FunctionCallParams
-from pipecat.services.openai.llm import OpenAILLMService
+from pipecat.services.anthropic.llm import AnthropicLLMService
 from pipecat.transports.base_transport import BaseTransport
 from pipecat.transports.daily.transport import DailyParams, DailyTransport
 from pipecat.transports.websocket.server import WebsocketServerParams
@@ -309,11 +309,13 @@ async def run_bot(
         ),
     )
 
-    # LLM service
-    llm = OpenAILLMService(
-        api_key=os.getenv("OPENAI_API_KEY"),
-        settings=OpenAILLMService.Settings(
-            model=os.getenv("OPENAI_MODEL", "gpt-4.1"),
+    # LLM service (Claude). Default to Opus 4.8; override with ANTHROPIC_MODEL
+    # (e.g. claude-haiku-4-5 for the lowest phone-call latency). Thinking is left
+    # off by default — extended thinking would add seconds of dead air per turn.
+    llm = AnthropicLLMService(
+        api_key=os.getenv("ANTHROPIC_API_KEY"),
+        settings=AnthropicLLMService.Settings(
+            model=os.getenv("ANTHROPIC_MODEL", "claude-opus-4-8"),
             system_instruction=system_prompt(lead),
         ),
     )

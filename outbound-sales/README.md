@@ -37,7 +37,7 @@ server.py /call_result ← bot.py (Hailey) ← call answered
 - **Transport(s)**: Daily PSTN (Dial-out), plus an eval transport for testing
 - **Pipeline**: Cascade
   - **STT**: Deepgram
-  - **LLM**: OpenAI
+  - **LLM**: Anthropic / Claude (default `claude-opus-4-8`, set `ANTHROPIC_MODEL` to change)
   - **TTS**: Cartesia
 
 > **Note**: This example currently installs `pipecat-ai` from the `main` branch on GitHub, because the CLI and evals features are newer than the latest PyPI release. Once 1.4.0 ships, switch the dependency in `server/pyproject.toml` to the PyPI version.
