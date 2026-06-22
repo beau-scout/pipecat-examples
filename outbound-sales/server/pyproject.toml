@@ -10,7 +10,7 @@ dependencies = [
     # from floating onto a newer, possibly breaking main.
     # TODO: switch to "pipecat-ai[cli,cartesia,daily,deepgram,openai,runner,silero]>=1.4.0"
     # once 1.4.0 is on PyPI.
-    "pipecat-ai[cli,cartesia,daily,deepgram,openai,anthropic,runner,silero] @ git+https://github.com/pipecat-ai/pipecat.git@6725945b38b2239452d9599eaf1e818eda7d1d19",
+    "pipecat-ai[cli,cartesia,daily,deepgram,openai,anthropic,runner,silero] @ git+https://github.com/pipecat-ai/pipecat.git@f9fc33ddca7d4f838c96ec5f3b5c41053dda786d",
     "pipecatcloud",
 ]
 

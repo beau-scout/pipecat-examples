@@ -11,4 +11,5 @@ runs_dir: test-runs
 scenarios_dir: scenarios
 suite:
   - bot: bot.py
-    scenarios: [happy_path, transfer_path, gatekeeper_refusal, voicemail]
+    scenarios:
+      [happy_path, transfer_path, gatekeeper_refusal, voicemail, wrong_number, explains_runscout]

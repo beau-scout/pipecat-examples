@@ -1,0 +1,20 @@
+# Wrong number: the person who answers clearly isn't the school. Hailey should
+# recognize it, apologize, say goodbye, and end the call as "wrong_number" —
+# not push the script.
+name: wrong_number
+
+judge:
+  modality: text
+  eval:
+    service: openai
+    model: gpt-4o-mini
+
+turns:
+  - user: "Yeah? This is Joe's Auto Body, you've got the wrong number."
+    expect:
+      - event: response
+        eval: "recognizes this isn't the school, apologizes briefly for the mix-up, and says goodbye — does not pitch RunScout or ask who handles security"
+      - event: function_call
+        calls:
+          - name: end_call
+            args: { reason: wrong_number }

@@ -1,0 +1,27 @@
+# Explanation: the front office asks what RunScout is. Hailey should give the
+# school-safety-platform pitch — existing cameras detect incidents and the
+# security team gets an email + text alert with video — then get back to
+# collecting the security contact's details.
+name: explains_runscout
+
+judge:
+  modality: text
+  eval:
+    service: openai
+    model: gpt-4o-mini
+
+turns:
+  - user: "Good morning, front office."
+    expect:
+      - event: response
+        eval: "asks who is in charge of safety or security at the school or district"
+
+  - user: "Hold on — what is this about? I've never heard of RunScout."
+    expect:
+      - event: response
+        eval: "explains RunScout is a school safety platform that connects to existing security cameras to automatically detect incidents like student elopement or a propped-open door, and that the security team gets an email and text alert with video of the incident; then returns to asking who handles safety and security"
+
+  - user: "Oh, okay. That'd be our director of safety, Marcus Lee. His email is mlee@example.k12.tx.us."
+    expect:
+      - event: response
+        eval: "reads the email address back to confirm it is spelled correctly, and asks for a direct phone number and/or a good time during the school day for a founder to call"

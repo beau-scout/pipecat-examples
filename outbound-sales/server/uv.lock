@@ -1351,7 +1351,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "pipecat-ai", extras = ["cli", "cartesia", "daily", "deepgram", "openai", "anthropic", "runner", "silero"], git = "https://github.com/pipecat-ai/pipecat.git?rev=6725945b38b2239452d9599eaf1e818eda7d1d19" },
+    { name = "pipecat-ai", extras = ["cli", "cartesia", "daily", "deepgram", "openai", "anthropic", "runner", "silero"], git = "https://github.com/pipecat-ai/pipecat.git?rev=f9fc33ddca7d4f838c96ec5f3b5c41053dda786d" },
     { name = "pipecatcloud" },
 ]
 
@@ -1459,8 +1459,8 @@ wheels = [
 
 [[package]]
 name = "pipecat-ai"
-version = "1.4.1.dev34"
-source = { git = "https://github.com/pipecat-ai/pipecat.git?rev=6725945b38b2239452d9599eaf1e818eda7d1d19#6725945b38b2239452d9599eaf1e818eda7d1d19" }
+version = "1.4.1.dev56"
+source = { git = "https://github.com/pipecat-ai/pipecat.git?rev=f9fc33ddca7d4f838c96ec5f3b5c41053dda786d#f9fc33ddca7d4f838c96ec5f3b5c41053dda786d" }
 dependencies = [
     { name = "aiofiles" },
     { name = "aiohttp" },
@@ -1512,14 +1512,14 @@ runner = [
 
 [[package]]
 name = "pipecat-ai-prebuilt"
-version = "1.0.2"
+version = "1.0.3"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "fastapi", extra = ["all"] },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/2f/e3/8236e20447691198ba2aebc4d0e1fe332b2fbb4deedb733ec44626966696/pipecat_ai_prebuilt-1.0.2.tar.gz", hash = "sha256:b76654dba9705651ef09fdd569241bae9c9572b1db147ac94bef3bc4da852163", size = 402681, upload-time = "2026-06-03T19:10:30.618Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/b6/e2/5a7f087355c099ed5f5d5a095ca099b9d4f63506ae51f5c8a9079a5e166c/pipecat_ai_prebuilt-1.0.3.tar.gz", hash = "sha256:f5852f3de82b4412ca5fae4dfae68ad05f94c9a20a5ba802c22e887fdc136212", size = 396428, upload-time = "2026-06-22T12:13:03.108Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/e5/13/3ca224c3898dbe54d82f48ad7b8b6543393d0d556373edc8b2e570bc4b6a/pipecat_ai_prebuilt-1.0.2-py3-none-any.whl", hash = "sha256:8e8f09345b1202b85394818e7eaf99c7dd0314de78db805b3ef37148ff7a355a", size = 402745, upload-time = "2026-06-03T19:10:28.794Z" },
+    { url = "https://files.pythonhosted.org/packages/03/e2/198278c9df7c7ff658ab58f0738ed07b3ff1b8fe3a9809e38dc6f91d400d/pipecat_ai_prebuilt-1.0.3-py3-none-any.whl", hash = "sha256:ba359629cd5220c5fc8ee43557e7deb07189f72b5073821ddf00c65a9c74f201", size = 396679, upload-time = "2026-06-22T12:13:01.19Z" },
 ]
 
 [[package]]

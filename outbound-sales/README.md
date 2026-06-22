@@ -84,15 +84,23 @@ Expected output:
   ✓ bot.py gatekeeper_refusal (8089ms)
   ✓ bot.py happy_path (14954ms)
   ✓ bot.py transfer_path (18785ms)
+  ✓ bot.py voicemail (9120ms)
+  ✓ bot.py wrong_number (6402ms)
+  ✓ bot.py explains_runscout (15310ms)
 
-  3/3 passed  ·  19.3s
+  6/6 passed  ·  31.1s
 ```
+
+> The eval **judge** (gpt-4o-mini, set in each scenario's `judge:`) is separate from the bot's LLM — it grades the transcripts, so running the suite needs an `OPENAI_API_KEY` with quota even though Hailey herself runs on Claude. (You can switch the judge to a local `ollama` model or a custom factory if you'd rather not use OpenAI.)
 
 The scenarios live in `scenarios/`:
 
-- `happy_path.yaml`: the front office hands over the safety director's email and phone (with extension); Hailey reads the email back to confirm
+- `happy_path.yaml`: the front office hands over the safety director's email and phone (with extension), Hailey reads the email back and gets a school-hours callback time
 - `transfer_path.yaml`: the front office offers to transfer Hailey; she declines and collects the contact info + callback time instead
 - `gatekeeper_refusal.yaml`: "take us off your list"; Hailey must not argue
+- `voicemail.yaml`: reaches an answering machine; leaves the callback message and ends as `voicemail`
+- `wrong_number.yaml`: not the school; she apologizes and ends as `wrong_number`
+- `explains_runscout.yaml`: "what is RunScout?"; she gives the school-safety-platform pitch (camera detection + email/text/video alerts), then resumes collecting details
 
 To iterate on a single scenario:
 
