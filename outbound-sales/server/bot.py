@@ -61,6 +61,7 @@ from pipecat.runner.types import EvalRunnerArguments, RunnerArguments
 from pipecat.runner.utils import create_transport
 from pipecat.services.cartesia.tts import CartesiaTTSService
 from pipecat.services.deepgram.stt import DeepgramSTTService
+from pipecat.services.elevenlabs.tts import ElevenLabsTTSService
 from pipecat.services.llm_service import FunctionCallParams
 from pipecat.services.anthropic.llm import AnthropicLLMService
 from pipecat.transports.base_transport import BaseTransport
@@ -301,14 +302,30 @@ async def run_bot(
     # Speech-to-Text service
     stt = DeepgramSTTService(api_key=os.getenv("DEEPGRAM_API_KEY"))
 
-    # Text-to-Speech service
-    tts = CartesiaTTSService(
-        api_key=os.getenv("CARTESIA_API_KEY"),
-        settings=CartesiaTTSService.Settings(
-            # Default: Cartesia "Sierra - California Girl"
-            voice=os.getenv("CARTESIA_VOICE_ID", "b7d50908-b17c-442d-ad8d-810c63997ed9"),
-        ),
-    )
+    # Text-to-Speech service. TTS_PROVIDER picks the vendor so you can A/B a
+    # voice clone on a real call: "cartesia" (default — lowest latency and cost)
+    # or "elevenlabs" (higher cloning fidelity). Each provider reads its own
+    # voice ID, so flipping the flag swaps both the engine and the voice.
+    tts_provider = os.getenv("TTS_PROVIDER", "cartesia").lower()
+    if tts_provider == "elevenlabs":
+        tts = ElevenLabsTTSService(
+            api_key=os.getenv("ELEVENLABS_API_KEY"),
+            settings=ElevenLabsTTSService.Settings(
+                # Default: ElevenLabs "Rachel". Point ELEVENLABS_VOICE_ID at your clone.
+                voice=os.getenv("ELEVENLABS_VOICE_ID", "21m00Tcm4TlvDq8ikWAM"),
+                # Flash v2.5 is ElevenLabs' lowest-latency model — best for the
+                # quick turn-taking a phone call needs.
+                model=os.getenv("ELEVENLABS_MODEL", "eleven_flash_v2_5"),
+            ),
+        )
+    else:
+        tts = CartesiaTTSService(
+            api_key=os.getenv("CARTESIA_API_KEY"),
+            settings=CartesiaTTSService.Settings(
+                # Default: Cartesia "Sierra - California Girl"
+                voice=os.getenv("CARTESIA_VOICE_ID", "b7d50908-b17c-442d-ad8d-810c63997ed9"),
+            ),
+        )
 
     # LLM service (Claude). Default to Opus 4.8; override with ANTHROPIC_MODEL
     # (e.g. claude-haiku-4-5 for the lowest phone-call latency). Thinking is left

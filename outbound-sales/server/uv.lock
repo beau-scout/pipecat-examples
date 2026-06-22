@@ -1351,7 +1351,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "pipecat-ai", extras = ["cli", "cartesia", "daily", "deepgram", "anthropic", "runner", "silero"], git = "https://github.com/pipecat-ai/pipecat.git?rev=f9fc33ddca7d4f838c96ec5f3b5c41053dda786d" },
+    { name = "pipecat-ai", extras = ["cli", "cartesia", "daily", "deepgram", "elevenlabs", "anthropic", "runner", "silero"], git = "https://github.com/pipecat-ai/pipecat.git?rev=f9fc33ddca7d4f838c96ec5f3b5c41053dda786d" },
     { name = "pipecatcloud" },
 ]
 

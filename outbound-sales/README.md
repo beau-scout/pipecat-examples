@@ -38,7 +38,10 @@ server.py /call_result ← bot.py (Hailey) ← call answered
 - **Pipeline**: Cascade
   - **STT**: Deepgram
   - **LLM**: Anthropic / Claude (default `claude-opus-4-8`, set `ANTHROPIC_MODEL` to change)
-  - **TTS**: Cartesia
+  - **TTS**: Cartesia (default) or ElevenLabs — set `TTS_PROVIDER` to pick the
+    engine and voice. Use this to A/B a clone of your own voice on a real call:
+    Cartesia is lowest-latency/cheapest, ElevenLabs has higher cloning fidelity.
+    Each reads its own voice ID (`CARTESIA_VOICE_ID` / `ELEVENLABS_VOICE_ID`).
 
 > **Note**: This example currently installs `pipecat-ai` from the `main` branch on GitHub, because the CLI and evals features are newer than the latest PyPI release. Once 1.4.0 ships, switch the dependency in `server/pyproject.toml` to the PyPI version.
 
