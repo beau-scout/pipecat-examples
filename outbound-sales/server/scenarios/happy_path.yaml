@@ -19,7 +19,7 @@ turns:
   - user: "Why are you calling? What is this about?"
     expect:
       - event: response
-        eval: "briefly explains RunScout connects to existing camera systems to detect everyday safety incidents like student elopement or propped-open doors, and returns to asking who handles security"
+        eval: "briefly explains RunScout is a school safety platform that uses existing cameras to detect incidents like student elopement or propped-open doors and alerts the security team with video, and returns to asking who handles security"
 
   - user: "Oh, that'd be our safety director, Dana Smith. Her email is dana.smith@lincoln.k12.ca.us, and her direct line is 555-0142 extension 12."
     expect:
