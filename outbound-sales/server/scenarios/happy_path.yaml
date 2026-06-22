@@ -6,8 +6,8 @@ name: happy_path
 judge:
   modality: text
   eval:
-    service: openai
-    model: gpt-4o-mini
+    factory: eval_judge.claude_judge
+    model: claude-haiku-4-5
 
 turns:
   # On a phone call the callee speaks first; Hailey then continues.

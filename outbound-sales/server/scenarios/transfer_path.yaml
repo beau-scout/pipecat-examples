@@ -6,8 +6,8 @@ name: transfer_path
 judge:
   modality: text
   eval:
-    service: openai
-    model: gpt-4o-mini
+    factory: eval_judge.claude_judge
+    model: claude-haiku-4-5
 
 turns:
   - user: "Maple Grove Unified School District, front desk."

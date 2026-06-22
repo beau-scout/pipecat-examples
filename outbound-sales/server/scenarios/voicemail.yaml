@@ -6,8 +6,8 @@ name: voicemail
 judge:
   modality: text
   eval:
-    service: openai
-    model: gpt-4o-mini
+    factory: eval_judge.claude_judge
+    model: claude-haiku-4-5
 
 turns:
   - user: "You've reached the main office at Oakwood Middle School. We can't take your call right now. Please leave a message after the tone. *beep*"

@@ -26,7 +26,7 @@ Run a real call (see README for the full flow)::
 Run in eval mode for fast, text-only testing::
 
     uv run bot.py -t eval
-    uv run pipecat eval run scenarios/happy_path.yaml
+    PYTHONPATH=. uv run pipecat eval run scenarios/happy_path.yaml
 """
 
 import os

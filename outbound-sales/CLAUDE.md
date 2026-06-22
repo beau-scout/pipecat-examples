@@ -20,8 +20,8 @@ All code lives in `server/`. Run every command from there with `uv run`.
 Prefer evals over real calls. They run the same bot in text mode with no telephony:
 
 ```bash
-uv run pipecat eval suite evals.yaml          # whole suite
-uv run bot.py -t eval                          # then: uv run pipecat eval run scenarios/happy_path.yaml -v
+PYTHONPATH=. uv run pipecat eval suite evals.yaml          # whole suite
+uv run bot.py -t eval                                      # then: PYTHONPATH=. uv run pipecat eval run scenarios/happy_path.yaml -v
 ```
 
 The bot exits when Hailey hangs up, so restart `bot.py -t eval` between single-scenario runs.

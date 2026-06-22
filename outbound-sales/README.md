@@ -11,7 +11,7 @@ This project was scaffolded with the Pipecat CLI:
 ```bash
 pipecat init outbound-sales --bot-type telephony -t daily_pstn_dialout \
   --daily-pstn-mode dial-out -m cascade \
-  --stt deepgram_stt --llm openai_llm --tts cartesia_tts --eval
+  --stt deepgram_stt --llm anthropic_llm --tts cartesia_tts --eval
 ```
 
 ## How It Works
@@ -70,12 +70,12 @@ All commands run from the `server/` directory.
 
 ## Test Hailey with Evals (no phone needed)
 
-Evals drive the bot over a local WebSocket in text mode: no telephony, no audio, no waiting. An OpenAI model (gpt-4o-mini) judges the responses, so only `OPENAI_API_KEY` is needed.
+Evals drive the bot over a local WebSocket in text mode: no telephony, no audio, no waiting. A Claude model (claude-haiku-4-5, via the `eval_judge.claude_judge` factory) judges the responses, so only `ANTHROPIC_API_KEY` is needed.
 
 Run the whole suite (spawns a fresh bot per scenario):
 
 ```bash
-uv run pipecat eval suite evals.yaml
+PYTHONPATH=. uv run pipecat eval suite evals.yaml
 ```
 
 Expected output:
@@ -91,7 +91,7 @@ Expected output:
   6/6 passed  ·  31.1s
 ```
 
-> The eval **judge** (gpt-4o-mini, set in each scenario's `judge:`) is separate from the bot's LLM — it grades the transcripts, so running the suite needs an `OPENAI_API_KEY` with quota even though Hailey herself runs on Claude. (You can switch the judge to a local `ollama` model or a custom factory if you'd rather not use OpenAI.)
+> The eval **judge** (claude-haiku-4-5, wired up in each scenario's `judge:` via `factory: eval_judge.claude_judge`) is separate from the bot's LLM — it grades the transcripts, so running the suite needs an `ANTHROPIC_API_KEY` with quota. Both Hailey and the judge run on Claude, so one key covers everything. (You can point the factory at a different model, or swap in a local `ollama` judge, if you'd rather not spend Anthropic credits on grading.)
 
 The scenarios live in `scenarios/`:
 
@@ -109,7 +109,7 @@ To iterate on a single scenario:
 uv run bot.py -t eval
 
 # Terminal 2
-uv run pipecat eval run scenarios/happy_path.yaml -v
+PYTHONPATH=. uv run pipecat eval run scenarios/happy_path.yaml -v
 ```
 
 This is the fast dev loop: tweak the system prompt in `bot.py`, re-run the suite, repeat.
