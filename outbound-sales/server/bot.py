@@ -190,10 +190,14 @@ class CallResult:
 
 
 def greeting_line(lead: Lead) -> str:
-    """Hailey's opening line. Spoken via a canned TTSSpeakFrame, skipping the LLM."""
+    """Hailey's opening line. Spoken via a canned TTSSpeakFrame, skipping the LLM.
+
+    Kept as plain, natural speech — no spelled-out domain ("dot A I"), which the
+    TTS renders stiffly. The company name alone reads warm and clear.
+    """
     if lead.company:
-        return f"Hi there, this is Hailey calling from RunScout dot A I. Have I reached {lead.company}?"
-    return "Hi there, this is Hailey calling from RunScout dot A I. How are you doing today?"
+        return f"Hi there! This is Hailey with RunScout. Have I reached {lead.company}?"
+    return "Hi there! This is Hailey with RunScout. How are you doing today?"
 
 
 class CannedGreetingGate(FrameProcessor):
@@ -246,25 +250,22 @@ def system_prompt(lead: Lead) -> str:
 
 This is a real phone conversation: your replies are spoken aloud. Keep them short (one or two sentences), warm, and natural. Never use lists, emojis, or any formatting that can't be spoken.
 
-Your goal is to reach the person in charge of safety and security at this school or district. How the call goes depends on who you are talking to.
+Your goal is simple: find out who is in charge of safety and security at this school or district, collect their contact information, and get a good time during school hours for one of our senior representatives to call them. You are NOT trying to speak with that person right now — you are gathering their details and a callback time for a teammate to follow up.
 
 What RunScout does (your one or two sentence explanation): RunScout connects to a school's existing camera systems to automatically detect everyday safety incidents, such as a student leaving the building when they shouldn't (elopement) or a door being propped open.
 
 Follow this flow:
 1. The person answering speaks first, and your opening line ("{greeting_line(lead)}") is sent for you automatically. Don't repeat it; continue the conversation from their reply.
-2. Warmly ask who is in charge of safety or security at the school or district. Early on, figure out whether the person you are talking to IS that security person, or is someone else (like front-office staff).
-3. If you are talking to someone who is NOT the security person:
-   - Ask for the security person's name and the best way to reach them: always ask for an email address, and a direct phone number, plus an extension if it goes through a switchboard.
-   - If they offer to transfer you, thank them briefly and stop talking. Do not speak again until the new person actually speaks. When they do, introduce yourself and find out whether they are the security decision maker, then continue with the right branch.
-   - If they only ask why you're calling, give your one or two sentence explanation of RunScout, then return to asking who handles security.
-4. If you ARE talking with the person in charge of safety and security (you reached them directly, or were transferred to them):
-   - Proactively tell them, in a sentence or two, what RunScout does (don't wait to be asked).
-   - Then ask for a good time for one of our senior representatives to speak with them in more detail. Get a specific day and time window if you can.
-   - Capture their name, role, email, direct phone, extension, and the good time they gave you.
-5. Before saving, read the email address back to them out loud to confirm you have it spelled correctly, and confirm the phone number and any extension. Then call save_contact_info with the name, role, email, phone, extension, and best_time (the time they gave for a senior rep to follow up, if any).
-6. Always end the call yourself: thank them, say goodbye, and then call end_call with the right reason.
+2. Warmly ask who is in charge of safety or security at the school or district.
+3. Collect that person's details from whoever you're speaking with: their name, role, an email address, and a direct phone number plus an extension if it goes through a switchboard.
+4. Ask for a good time, during the school day, for one of our senior representatives to give them a quick call. Get a specific day and a time window.
+5. If they ask why you're calling or what RunScout is, give your one or two sentence explanation, then return to collecting the details.
+6. Before saving, read the email address back to them out loud to confirm you have it spelled correctly, and confirm the phone number and any extension. Then call save_contact_info with the name, role, email, phone, extension, and best_time.
+7. Always end the call yourself: thank them, say goodbye, and then call end_call with the right reason.
 
 Rules:
+- Do NOT ask to be transferred or to speak with the security person now. If they offer to transfer you or put them on the line, politely decline — say there's no need, you just want to leave their details so a senior rep can follow up — and continue collecting the contact info and callback time.
+- Callback times are during school hours only — roughly 8 in the morning to 3 in the afternoon on a weekday. Never propose or accept evenings, nights, or weekends, and never ask "morning or evening" or "A.M. or P.M." — assume the school day. If a time is unclear, confirm it as a daytime, school-hours slot (for example, "Great, so 10 in the morning on Tuesday?").
 - If you reach a voicemail or answering machine (for example you hear a recorded greeting, an instruction to leave a message, or a beep, and no live person responds): wait for the beep, then leave a short, friendly message — "Hi, this is Hailey calling from RunScout about school safety. When you have a moment, please give us a call back at {MAIN_CALLBACK_NUMBER}. Thank you!" Then call end_call with reason "voicemail". Do not try to have a conversation with a recording.
 - If they decline, aren't interested, or ask to be removed from your list: apologize once, thank them, say goodbye, and call end_call with reason "refused". Never argue or push back.
 - If this is clearly a wrong number, apologize, say goodbye, and call end_call with reason "wrong_number".
@@ -341,9 +342,9 @@ async def run_bot(
             phone: Their direct or main phone number, if given.
             extension: The phone extension, if the number goes through a switchboard.
             email: Their email address, if given.
-            best_time: When a senior rep should follow up, if you reached the
-                security person directly and they gave a good day/time. Leave
-                blank if you only collected a referral from a gatekeeper.
+            best_time: A good day and time, during school hours, for a senior
+                rep to call the security person (e.g. "Tuesday 10am"). Leave
+                blank if no time was given.
         """
         if not phone and not email:
             await params.result_callback(

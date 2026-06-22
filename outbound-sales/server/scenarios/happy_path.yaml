@@ -29,8 +29,13 @@ turns:
 
   - user: "Yes, that's correct."
     expect:
-      # Expectations match in order: Hailey saves the contact (with extension),
-      # speaks her thanks, then hangs up.
+      - event: response
+        eval: "asks for a good time during the school day for a senior rep to call Dana; does not offer evenings or ask 'A.M. or P.M.'"
+
+  - user: "Try her around 9 in the morning on Wednesday."
+    expect:
+      # Expectations match in order: Hailey saves the contact (with extension
+      # and the school-hours callback time), speaks her thanks, then hangs up.
       - event: function_call
         calls:
           - name: save_contact_info

@@ -1,6 +1,6 @@
 # RunScout School Safety Outreach Bot
 
-Meet Hailey, RunScout's school-safety outreach agent built with Pipecat. She calls a list of schools and districts in batches of 5 over Daily PSTN, greets whoever answers ("Hi there, this is Hailey calling from RunScout dot A I."), and asks who is in charge of safety and security. If asked why she's calling, she explains that RunScout connects to a school's existing camera systems to detect everyday incidents such as student elopement or propped-open doors. She collects the security decision maker's name, role, email, and phone (with extension) — reading the email back to confirm it — or gets transferred, then reports the contact to the server, says thanks, and hangs up.
+Meet Hailey, RunScout's school-safety outreach agent built with Pipecat. She calls a list of schools and districts in batches of 5 over Daily PSTN, greets whoever answers ("Hi there, this is Hailey calling from RunScout dot A I."), and asks who is in charge of safety and security. If asked why she's calling, she explains that RunScout connects to a school's existing camera systems to detect everyday incidents such as student elopement or propped-open doors. From whoever answers, she collects the security person's name, role, email, and phone (with extension) — reading the email back to confirm it — plus a good time during school hours for a senior rep to call back. She does not ask to be transferred; she's just gathering details for follow-up. Then she reports the contact to the server, says thanks, and hangs up.
 
 When a contact is captured, the server **validates it against the school's website domain and verifies it through Apollo enrichment**, then **enrolls the contact into an Apollo sequence** so a RunScout teammate follows up by email and phone.
 
@@ -26,7 +26,7 @@ server.py /call_result ← bot.py (Hailey) ← call answered
 
 1. `dialer.py` reads `leads.csv` (schools and districts) and starts calls in batches of 5
 2. For each school, `server.py` creates a Daily room with dial-out enabled and starts a bot
-3. The bot dials the school's number; when they answer, Hailey asks who handles safety and security. If she's talking to a gatekeeper she collects the security person's contact info; if she's transferred to (or reaches) the security decision maker directly, she explains what RunScout does and asks for a good time for a senior rep to follow up
+3. The bot dials the school's number; when they answer, Hailey asks who handles safety and security, collects that person's contact info, and asks for a good time during school hours for a senior rep to call back. She declines any offer to be transferred — she's only gathering details
 4. Hailey saves the security contact with the `save_contact_info` tool (name, role, email, phone, extension, and the best follow-up time) and hangs up with the `end_call` tool
 5. Every finished call reports one outcome row to `server.py`, which logs it and keeps it in memory; the dialer polls `GET /results` to know when a batch is done, then starts the next batch
 6. On a captured contact, `server.py` verifies the email/phone through Apollo (and validates the email domain against the school's website), then enrolls the contact in an Apollo sequence for the team to follow up. (This is a demo: a real production app would also save outcomes to a database.)
@@ -91,7 +91,7 @@ Expected output:
 The scenarios live in `scenarios/`:
 
 - `happy_path.yaml`: the front office hands over the safety director's email and phone (with extension); Hailey reads the email back to confirm
-- `transfer_path.yaml`: the front office transfers Hailey to the district's safety director
+- `transfer_path.yaml`: the front office offers to transfer Hailey; she declines and collects the contact info + callback time instead
 - `gatekeeper_refusal.yaml`: "take us off your list"; Hailey must not argue
 
 To iterate on a single scenario:

@@ -1,7 +1,6 @@
-# Transfer path: the front office transfers Hailey to the district's safety
-# director. Because she has now reached the security decision maker, Hailey
-# explains what RunScout does and asks for a good time for a senior rep to
-# follow up, captures the contact (with that time), and ends the call.
+# Decline-transfer path: the front office offers to transfer Hailey to the
+# safety director. She should politely decline (she's only gathering details for
+# a callback), then collect the contact info and a school-hours callback time.
 name: transfer_path
 
 judge:
@@ -16,31 +15,25 @@ turns:
       - event: response
         eval: "says she is calling from RunScout and asks who is in charge of safety or security at the school or district"
 
-  - user: "That would be our director of safety. Hold on, I'll transfer you."
+  - user: "That's our director of safety, Dana Smith. Want me to transfer you?"
     expect:
       - event: response
-        eval: "thanks them and waits for the transfer; does not say goodbye or end the call"
+        eval: "politely declines the transfer (says there's no need / she just wants to leave details for a senior rep to follow up) and asks for Dana's email and direct phone number"
 
-  - user: "Hi, this is Dana Smith, director of safety and security. Who am I speaking with?"
+  - user: "Sure, dana.smith@maplegrove.k12.ca.us, and the front office line is 555-0148 extension 12."
     expect:
       - event: response
-        eval: "introduces herself as calling from RunScout and, since she has reached the security decision maker, explains what RunScout does (detecting incidents like student elopement or propped-open doors using existing cameras) and asks for a good time for a senior representative to speak with them"
+        eval: "reads the email address back to confirm it is spelled correctly, and asks for a good time during the school day for a senior rep to call"
 
-  - user: "Sure, we could talk next Tuesday afternoon. Email me at dana.smith@maplegrove.k12.ca.us."
+  - user: "Mornings are good, maybe Tuesday."
     expect:
-      # Hailey reads the email back to confirm before saving.
-      - event: response
-        eval: "reads the email address back to confirm it is spelled correctly"
-
-  - user: "That's right."
-    expect:
-      # Expectations match in order: Hailey saves the contact (including the
-      # follow-up time), thanks Dana, then hangs up.
+      # Expectations match in order: Hailey saves the contact (with a
+      # school-hours time), thanks them, then hangs up.
       - event: function_call
         calls:
           - name: save_contact_info
       - event: response
-        eval: "thanks Dana"
+        eval: "thanks them"
       - event: function_call
         calls:
           - name: end_call
