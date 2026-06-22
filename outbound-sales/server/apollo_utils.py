@@ -235,31 +235,51 @@ async def _add_to_sequence(
 
 
 async def _ensure_account(
-    session: aiohttp.ClientSession, api_key: str, school_name: str, phone: str, website: str
+    session: aiohttp.ClientSession,
+    api_key: str,
+    school_name: str,
+    phone: str,
+    website: str,
+    email: str = "",
 ) -> str | None:
     """Find or create the Apollo Account (org) for the school. Returns its id.
 
-    Searches first so a school that already exists isn't duplicated; only
-    creates a new account when there's no name match.
+    Matches by DOMAIN, not name: a generic name like "Lincoln Elementary School"
+    exists for many different schools, so reusing an account by name links the
+    contact to the wrong school. We only reuse an existing account when its
+    domain matches the school's domain (from the enriched website, else the
+    captured email). Otherwise we create a fresh account carrying that domain so
+    future calls to the same school match it.
     """
     if not school_name:
         return None
-    try:
-        async with session.post(
-            f"{APOLLO_BASE_URL}/accounts/search",
-            headers=_headers(api_key),
-            json={"q_organization_name": school_name, "per_page": 10},
-        ) as resp:
-            if resp.status in (200, 201):
-                data = await resp.json()
-                target = school_name.strip().lower()
-                for acct in data.get("accounts", []):
-                    if (acct.get("name") or "").strip().lower() == target:
-                        return acct.get("id")
-    except Exception as e:
-        logger.warning(f"Apollo account search error: {e}")
 
-    payload = {"name": school_name, "phone": phone or "", "domain": _domain_of_url(website)}
+    # Best domain we have for this school: enriched website first, else the
+    # captured contact email's domain (e.g. delmarsd.ca.us).
+    domain = _domain_of_url(website) or _domain_of_email(email)
+
+    if domain:
+        try:
+            async with session.post(
+                f"{APOLLO_BASE_URL}/accounts/search",
+                headers=_headers(api_key),
+                json={"q_organization_name": school_name, "per_page": 25},
+            ) as resp:
+                if resp.status in (200, 201):
+                    for acct in (await resp.json()).get("accounts", []):
+                        acct_domain = (
+                            acct.get("primary_domain")
+                            or acct.get("domain")
+                            or _domain_of_url(acct.get("website_url", ""))
+                        ).lower()
+                        if acct_domain == domain:
+                            return acct.get("id")
+        except Exception as e:
+            logger.warning(f"Apollo account search error: {e}")
+
+    # No domain match (or no domain to match on) — create a new account rather
+    # than risk linking to a same-named but different school.
+    payload = {"name": school_name, "phone": phone or "", "domain": domain}
     payload = {k: v for k, v in payload.items() if v}
     try:
         async with session.post(
@@ -317,6 +337,7 @@ async def enroll_security_contact(row: dict[str, str]) -> None:
                     row.get("lead_company", ""),
                     row.get("lead_phone", ""),
                     verified.get("school_website", ""),
+                    verified.get("email") or row.get("contact_email", ""),
                 )
                 if account_id:
                     logger.info(
