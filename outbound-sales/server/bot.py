@@ -29,7 +29,6 @@ Run in eval mode for fast, text-only testing::
     PYTHONPATH=. uv run pipecat eval run scenarios/happy_path.yaml
 """
 
-import asyncio
 import json
 import os
 from dataclasses import dataclass, field
@@ -42,12 +41,7 @@ from pipecat.audio.turn.smart_turn.local_smart_turn_v3 import LocalSmartTurnAnal
 from pipecat.audio.vad.silero import SileroVADAnalyzer
 from pipecat.frames.frames import (
     EndWorkerFrame,
-    Frame,
     FunctionCallResultProperties,
-    LLMContextFrame,
-    LLMFullResponseEndFrame,
-    LLMFullResponseStartFrame,
-    LLMTextFrame,
     TTSSpeakFrame,
 )
 from pipecat.observers.user_bot_latency_observer import UserBotLatencyObserver
@@ -58,14 +52,14 @@ from pipecat.processors.aggregators.llm_response_universal import (
     LLMContextAggregatorPair,
     LLMUserAggregatorParams,
 )
-from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
+from pipecat.processors.frame_processor import FrameDirection
 from pipecat.runner.types import EvalRunnerArguments, RunnerArguments
 from pipecat.runner.utils import create_transport
+from pipecat.services.anthropic.llm import AnthropicLLMService
 from pipecat.services.cartesia.tts import CartesiaTTSService
 from pipecat.services.deepgram.stt import DeepgramSTTService
 from pipecat.services.elevenlabs.tts import ElevenLabsTTSService
 from pipecat.services.llm_service import FunctionCallParams
-from pipecat.services.anthropic.llm import AnthropicLLMService
 from pipecat.transports.base_transport import BaseTransport
 from pipecat.transports.daily.transport import DailyParams, DailyTransport
 from pipecat.transports.websocket.server import WebsocketServerParams
@@ -195,70 +189,6 @@ class CallResult:
         }
 
 
-def greeting_line(lead: Lead) -> str:
-    """Hailey's opening line. Introduces herself and confirms she reached the
-    right school. The LLM then asks the security question once they confirm.
-
-    Phrased as one flowing utterance (em-dash, not two clipped sentences) so
-    the TTS renders it with natural conversational prosody instead of a stilted,
-    "recorded" cadence.
-    """
-    if lead.company:
-        return f"Hi there — this is Hailey calling from RunScout. Is this {lead.company}?"
-    return "Hi there — this is Hailey calling from RunScout. Have I reached the school's front office?"
-
-
-class CannedGreetingGate(FrameProcessor):
-    """Replies to the caller's first utterance with a canned greeting.
-
-    Hailey's opening line never changes, so the first turn skips the LLM
-    round-trip entirely: when the first user turn ends, the LLMContextFrame
-    that would have triggered a completion is swallowed and a TTSSpeakFrame
-    with the greeting is pushed instead. append_to_context=True makes the
-    spoken text land in the LLM context, so later turns see it as a normal
-    assistant message. Every later turn passes through untouched.
-
-    Text-mode evals only observe LLM text events, never TTS output, so eval
-    runs (as_llm_response=True) push the greeting as LLM response frames
-    instead. Same text, same skipped round-trip, just a frame shape the eval
-    harness can see.
-    """
-
-    def __init__(self, greeting: str, *, as_llm_response: bool = False):
-        super().__init__()
-        self._greeting = greeting
-        self._as_llm_response = as_llm_response
-        self._greeted = False
-
-    async def deliver(self):
-        """Speak the greeting now, pushed from this processor's own position
-        (downstream to the LLM/TTS). Used for outbound calls, where the bot
-        speaks first the moment the callee answers. Idempotent.
-        """
-        if self._greeted:
-            return
-        self._greeted = True
-        if self._as_llm_response:
-            await self.push_frame(LLMFullResponseStartFrame())
-            await self.push_frame(LLMTextFrame(self._greeting))
-            await self.push_frame(LLMFullResponseEndFrame())
-        else:
-            await self.push_frame(TTSSpeakFrame(self._greeting, append_to_context=True))
-
-    async def process_frame(self, frame: Frame, direction: FrameDirection):
-        await super().process_frame(frame, direction)
-        # Fallback trigger: if the first user turn arrives before deliver() was
-        # called (e.g. eval runs, or the callee speaks instantly), greet now.
-        if (
-            not self._greeted
-            and direction == FrameDirection.DOWNSTREAM
-            and isinstance(frame, LLMContextFrame)
-        ):
-            await self.deliver()
-            return
-        await self.push_frame(frame, direction)
-
-
 def system_prompt(lead: Lead) -> str:
     if lead.company:
         place_line = f"You are calling {lead.company}."
@@ -274,8 +204,10 @@ Your goal is simple: find out who is in charge of safety and security at this sc
 What RunScout is (give this when they ask what RunScout is or why you're calling, in a sentence or two): RunScout is a school safety platform. It connects to a school's existing security cameras to automatically detect everyday safety incidents — like a student leaving the building when they shouldn't (elopement) or a door propped open — and the moment it detects one, it sends the security team an email and a text alert with video of what happened.
 
 Follow this flow — one question at a time, nothing extra:
-1. Your opening line ("{greeting_line(lead)}") is sent automatically — it introduces you and confirms you reached the right school. Pick up from their reply.
-2. Once they confirm it's the school, say "Great!" and ask who is in charge of safety and security at the school. If they ask why you're calling first, give the one-line RunScout explanation, then ask. Once you know who handles security, get their name and role.
+1. The person who answers speaks first — usually "Hello" or "Hello, {lead.company or 'the school name'}". Your FIRST reply always introduces yourself ("Hi, this is Hailey from RunScout"), then branches on what they said:
+   - If they ALREADY said the school's name when answering (e.g. "Hello, Lincoln Elementary"): introduce yourself and go straight to asking who is in charge of safety and security. For example: "Hi, this is Hailey from RunScout — who's in charge of safety and security there?"
+   - If they did NOT say the school's name (just "Hello", "Front office", etc.): introduce yourself and confirm you've reached the right school first. For example: "Hi, this is Hailey from RunScout — have I reached {lead.company or 'the school'}?" Once they confirm, ask who is in charge of safety and security.
+2. If they ask why you're calling before answering, give the one-line RunScout explanation, then ask who handles security. Once you know who handles security, get their name and role.
 3. Ask for their direct phone number (and extension if it's a switchboard line). One ask — no follow-up.
 4. Ask for their email address. One ask — no follow-up.
 5. Read the email back to confirm — spoken naturally, never the raw address. Replace "@" with "at" and "." with "dot", pause between chunks. Example: "dana.smith@lincoln.k12.ca.us" → "dana dot smith, at lincoln dot k twelve, dot c a, dot u s — did I get that right?" Pass the real email address to save_contact_info, not the spoken version.
@@ -455,22 +387,16 @@ async def run_bot(
         ),
     )
 
-    # CannedGreetingGate speaks the fixed opening line, skipping an LLM
-    # round-trip. For real calls we trigger it from on_first_participant_joined
-    # (below) — once the dialed party's media is bridged — so Hailey speaks
-    # first without the greeting being clipped by PSTN early-media. The gate's
-    # own first-LLMContextFrame trigger is a fallback (and how eval runs greet).
-    greeting_gate = CannedGreetingGate(
-        greeting_line(lead), as_llm_response=dialout_settings is None
-    )
-
-    # Pipeline - assembled from reusable components
+    # Pipeline - assembled from reusable components. The person who answers
+    # speaks first ("Hello" / "Hello, Lincoln Elementary"); Hailey's first reply
+    # is generated by the LLM so she can adapt — introduce herself and either
+    # confirm the school or go straight to the security question (see the system
+    # prompt). No canned first turn, so nothing to clip on PSTN early-media.
     pipeline = Pipeline(
         [
             transport.input(),
             stt,
             user_aggregator,
-            greeting_gate,
             llm,
             tts,
             transport.output(),
@@ -505,23 +431,10 @@ async def run_bot(
         @transport.event_handler("on_dialout_answered")
         async def on_dialout_answered(transport, data):
             logger.debug(f"Dial-out answered: {data}")
-            # SIP "callee picked up" — signaling only. The callee's audio is NOT
-            # bridged yet, so we do NOT greet here (a greeting pushed now is
-            # written to the room before the phone leg carries audio and gets
-            # clipped). We only record success; the greeting fires on
-            # on_first_participant_joined below, once media is live.
+            # Record that the callee picked up (so on_dialout_stopped doesn't
+            # misreport a connected call as no_answer). Hailey doesn't speak
+            # first — the person says "Hello" and the LLM replies.
             dialout_manager.mark_successful()
-
-        @transport.event_handler("on_first_participant_joined")
-        async def on_first_participant_joined(transport, participant):
-            # The dialed party has joined the room and capture_participant_audio
-            # has bridged their media, so bot->callee audio is now flowing. This
-            # fires exactly once (transport guards it with
-            # _other_participant_has_joined). Small settle delay covers PSTN
-            # early-media so the first words aren't clipped, then Hailey greets.
-            logger.debug(f"First participant joined, delivering greeting: {participant}")
-            await asyncio.sleep(0.5)
-            await greeting_gate.deliver()
 
         @transport.event_handler("on_dialout_stopped")
         async def on_dialout_stopped(transport, data):

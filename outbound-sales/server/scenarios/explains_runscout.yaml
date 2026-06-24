@@ -11,10 +11,12 @@ judge:
     model: claude-haiku-4-5
 
 turns:
+  # They answer without naming the school, so Hailey introduces herself and
+  # confirms she reached the right place before anything else.
   - user: "Good morning, front office."
     expect:
       - event: response
-        eval: "asks who is in charge of safety or security at the school or district"
+        eval: "introduces herself as Hailey from RunScout and, since they did not say the school's name, confirms she has reached the right school (e.g. asks whether this is the school)"
 
   - user: "Hold on — what is this about? I've never heard of RunScout."
     expect:
