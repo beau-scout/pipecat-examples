@@ -196,10 +196,15 @@ class CallResult:
 
 def greeting_line(lead: Lead) -> str:
     """Hailey's opening line. Introduces herself and confirms she reached the
-    right school. The LLM then asks the security question once they confirm."""
+    right school. The LLM then asks the security question once they confirm.
+
+    Phrased as one flowing utterance (em-dash, not two clipped sentences) so
+    the TTS renders it with natural conversational prosody instead of a stilted,
+    "recorded" cadence.
+    """
     if lead.company:
-        return f"Hello, this is Hailey from RunScout. Is this {lead.company}?"
-    return "Hello, this is Hailey from RunScout. Have I reached the school's front office?"
+        return f"Hi there — this is Hailey calling from RunScout. Is this {lead.company}?"
+    return "Hi there — this is Hailey calling from RunScout. Have I reached the school's front office?"
 
 
 class CannedGreetingGate(FrameProcessor):
