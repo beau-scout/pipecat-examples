@@ -336,7 +336,7 @@ async def run_bot(
     llm = AnthropicLLMService(
         api_key=os.getenv("ANTHROPIC_API_KEY"),
         settings=AnthropicLLMService.Settings(
-            model=os.getenv("ANTHROPIC_MODEL", "claude-opus-4-8"),
+            model=os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-6"),
             system_instruction=system_prompt(lead),
         ),
     )
@@ -437,14 +437,22 @@ async def run_bot(
         ),
     )
 
+    # CannedGreetingGate intercepts the first LLMContextFrame and injects the
+    # greeting before the LLM sees it — skipping an LLM round-trip. For real
+    # calls we trigger it from on_dialout_answered (below) so Hailey speaks
+    # first without waiting for the person to say something. Eval runs still
+    # rely on the gate firing on the first context frame from the harness.
+    greeting_gate = CannedGreetingGate(
+        greeting_line(lead), as_llm_response=dialout_settings is None
+    )
+
     # Pipeline - assembled from reusable components
     pipeline = Pipeline(
         [
             transport.input(),
             stt,
             user_aggregator,
-            # First reply is canned, so the greeting starts without an LLM round-trip
-            CannedGreetingGate(greeting_line(lead), as_llm_response=dialout_settings is None),
+            greeting_gate,
             llm,
             tts,
             transport.output(),
@@ -480,6 +488,14 @@ async def run_bot(
         async def on_dialout_answered(transport, data):
             logger.debug(f"Dial-out answered: {data}")
             dialout_manager.mark_successful()
+            # Outbound call: Hailey speaks first. Mark the gate so it doesn't
+            # double-fire later, then inject the greeting as LLM response frames
+            # so it goes through the same TTS path as all other speech (natural
+            # prosody, no "recorded" quality difference).
+            greeting_gate._greeted = True
+            await greeting_gate.push_frame(LLMFullResponseStartFrame())
+            await greeting_gate.push_frame(LLMTextFrame(greeting_line(lead)))
+            await greeting_gate.push_frame(LLMFullResponseEndFrame())
 
         @transport.event_handler("on_dialout_stopped")
         async def on_dialout_stopped(transport, data):
