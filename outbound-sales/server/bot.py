@@ -229,20 +229,31 @@ class CannedGreetingGate(FrameProcessor):
         self._as_llm_response = as_llm_response
         self._greeted = False
 
+    async def deliver(self):
+        """Speak the greeting now, pushed from this processor's own position
+        (downstream to the LLM/TTS). Used for outbound calls, where the bot
+        speaks first the moment the callee answers. Idempotent.
+        """
+        if self._greeted:
+            return
+        self._greeted = True
+        if self._as_llm_response:
+            await self.push_frame(LLMFullResponseStartFrame())
+            await self.push_frame(LLMTextFrame(self._greeting))
+            await self.push_frame(LLMFullResponseEndFrame())
+        else:
+            await self.push_frame(TTSSpeakFrame(self._greeting, append_to_context=True))
+
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
+        # Fallback trigger: if the first user turn arrives before deliver() was
+        # called (e.g. eval runs, or the callee speaks instantly), greet now.
         if (
             not self._greeted
             and direction == FrameDirection.DOWNSTREAM
             and isinstance(frame, LLMContextFrame)
         ):
-            self._greeted = True
-            if self._as_llm_response:
-                await self.push_frame(LLMFullResponseStartFrame())
-                await self.push_frame(LLMTextFrame(self._greeting))
-                await self.push_frame(LLMFullResponseEndFrame())
-            else:
-                await self.push_frame(TTSSpeakFrame(self._greeting, append_to_context=True))
+            await self.deliver()
             return
         await self.push_frame(frame, direction)
 
@@ -257,7 +268,7 @@ def system_prompt(lead: Lead) -> str:
 
 This is a real phone conversation: your replies are spoken aloud. Keep them short (one or two sentences), warm, and natural. Never use lists, emojis, or any formatting that can't be spoken.
 
-Your goal is simple: find out who is in charge of safety and security at this school or district, collect their contact information, and get a good time during school hours for one of our founders to call them. You are NOT trying to speak with that person right now — you are gathering their details and a callback time for a teammate to follow up.
+Your goal is simple: find out who is in charge of safety and security at this school or district, collect their contact information, and get a good time for one of our founders to call them. You are NOT trying to speak with that person right now — you are gathering their details and a callback time for a teammate to follow up.
 
 What RunScout is (give this when they ask what RunScout is or why you're calling, in a sentence or two): RunScout is a school safety platform. It connects to a school's existing security cameras to automatically detect everyday safety incidents — like a student leaving the building when they shouldn't (elopement) or a door propped open — and the moment it detects one, it sends the security team an email and a text alert with video of what happened.
 
@@ -267,7 +278,7 @@ Follow this flow — one question at a time, nothing extra:
 3. Ask for their direct phone number (and extension if it's a switchboard line). One ask — no follow-up.
 4. Ask for their email address. One ask — no follow-up.
 5. Read the email back to confirm — spoken naturally, never the raw address. Replace "@" with "at" and "." with "dot", pause between chunks. Example: "dana.smith@lincoln.k12.ca.us" → "dana dot smith, at lincoln dot k twelve, dot c a, dot u s — did I get that right?" Pass the real email address to save_contact_info, not the spoken version.
-6. Ask for a good time during the school day for one of our founders to call. One ask — no follow-up.
+6. Ask for a good time for one of our founders to call. One ask — no follow-up.
 7. End cleanly with exactly: "Thank you for your help, I really appreciate it. Have a wonderful day!" then immediately call end_call. No recap, no "is there anything else."
 
 Critical rule on follow-ups: after each question, wait for the answer. Do NOT add a second question or a clarifying phrase in the same turn. One question. Stop. Wait.
@@ -275,7 +286,7 @@ Critical rule on follow-ups: after each question, wait for the answer. Do NOT ad
 Rules:
 - If someone asks whether you are a real person, a robot, AI, or automated: be honest. Acknowledge that you are an AI voice assistant — say something like "I am an AI assistant calling on behalf of RunScout" — and then continue naturally. Never claim to be a human. Never double down on being a person if pressed. Being straightforward builds more trust than pretending.
 - Do NOT ask to be transferred or to speak with the security person now. If they offer to transfer you or put them on the line, politely decline — say there's no need, you just want to leave their details so a senior rep can follow up — and continue collecting the contact info and callback time.
-- Callback times are during school hours only — roughly 8 in the morning to 3 in the afternoon on a weekday. Never propose or accept evenings, nights, or weekends, and never ask "morning or evening" or "A.M. or P.M." — assume the school day. If a time is unclear, confirm it as a daytime, school-hours slot (for example, "Great, so 10 in the morning on Tuesday?").
+- Whatever callback time they give you, just accept it. Confirm it back warmly ("Great, after 3 it is — got it") and move on. NEVER push back, negotiate, or suggest a different time, even if they pick an evening or an odd hour. Don't ask "A.M. or P.M." — if it's genuinely ambiguous, assume the most natural reading and confirm it. Their preferred time is always fine.
 - If you reach a voicemail or answering machine (for example you hear a recorded greeting, an instruction to leave a message, or a beep, and no live person responds): wait for the beep, then leave a short, friendly message — "Hi, this is Hailey calling from RunScout about school safety. When you have a moment, please give us a call back at {MAIN_CALLBACK_NUMBER}. Thank you!" Then call end_call with reason "voicemail". Do not try to have a conversation with a recording.
 - If they decline, aren't interested, or ask to be removed from your list: apologize once, thank them, say goodbye, and call end_call with reason "refused". Never argue or push back.
 - If this is clearly a wrong number, apologize, say goodbye, and call end_call with reason "wrong_number".
@@ -493,23 +504,15 @@ async def run_bot(
         @transport.event_handler("on_dialout_answered")
         async def on_dialout_answered(transport, data):
             logger.debug(f"Dial-out answered: {data}")
-            if dialout_manager.is_successful:
-                # Already greeted on an earlier answered event; don't repeat.
-                return
+            already_answered = dialout_manager.is_successful
             dialout_manager.mark_successful()
-            # Outbound call: Hailey speaks first. Disable the gate (it would
-            # otherwise fire on the first context frame) and queue the greeting
-            # from the start of the pipeline as LLM response frames, so it goes
-            # through the same TTS path as all other speech (natural prosody, no
-            # "recorded" quality) and is captured into the conversation context.
-            greeting_gate._greeted = True
-            await worker.queue_frames(
-                [
-                    LLMFullResponseStartFrame(),
-                    LLMTextFrame(greeting_line(lead)),
-                    LLMFullResponseEndFrame(),
-                ]
-            )
+            if already_answered:
+                # Duplicate answered event; greeting already delivered.
+                return
+            # Outbound call: Hailey speaks first the moment the callee answers.
+            # deliver() pushes from the gate's position (the proven path to TTS),
+            # so the greeting reliably plays before the person says anything.
+            await greeting_gate.deliver()
 
         @transport.event_handler("on_dialout_stopped")
         async def on_dialout_stopped(transport, data):
