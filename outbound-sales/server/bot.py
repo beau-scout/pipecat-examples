@@ -195,10 +195,11 @@ class CallResult:
 
 
 def greeting_line(lead: Lead) -> str:
-    """Hailey's opening line. Spoken via a canned TTSSpeakFrame, skipping the LLM."""
+    """Hailey's opening line. Introduces herself and confirms she reached the
+    right school. The LLM then asks the security question once they confirm."""
     if lead.company:
-        return f"Hi, my name is Hailey and I'm calling from RunScout. Who's in charge of safety or security at {lead.company}?"
-    return "Hi, my name is Hailey and I'm calling from RunScout. Who's in charge of safety or security at your school?"
+        return f"Hello, this is Hailey from RunScout. Is this {lead.company}?"
+    return "Hello, this is Hailey from RunScout. Have I reached the school's front office?"
 
 
 class CannedGreetingGate(FrameProcessor):
@@ -256,8 +257,8 @@ Your goal is simple: find out who is in charge of safety and security at this sc
 What RunScout is (give this when they ask what RunScout is or why you're calling, in a sentence or two): RunScout is a school safety platform. It connects to a school's existing security cameras to automatically detect everyday safety incidents — like a student leaving the building when they shouldn't (elopement) or a door propped open — and the moment it detects one, it sends the security team an email and a text alert with video of what happened.
 
 Follow this flow — one question at a time, nothing extra:
-1. Your opening line ("{greeting_line(lead)}") is sent automatically. Pick up from their reply. If they answered the security question, move to step 3. If they ask why you're calling first, give the one-line RunScout explanation, then ask again.
-2. Once you know who handles security, get their name and role.
+1. Your opening line ("{greeting_line(lead)}") is sent automatically — it introduces you and confirms you reached the right school. Pick up from their reply.
+2. Once they confirm it's the school, say "Great!" and ask who is in charge of safety and security at the school. If they ask why you're calling first, give the one-line RunScout explanation, then ask. Once you know who handles security, get their name and role.
 3. Ask for their direct phone number (and extension if it's a switchboard line). One ask — no follow-up.
 4. Ask for their email address. One ask — no follow-up.
 5. Read the email back to confirm — spoken naturally, never the raw address. Replace "@" with "at" and "." with "dot", pause between chunks. Example: "dana.smith@lincoln.k12.ca.us" → "dana dot smith, at lincoln dot k twelve, dot c a, dot u s — did I get that right?" Pass the real email address to save_contact_info, not the spoken version.
@@ -487,15 +488,23 @@ async def run_bot(
         @transport.event_handler("on_dialout_answered")
         async def on_dialout_answered(transport, data):
             logger.debug(f"Dial-out answered: {data}")
+            if dialout_manager.is_successful:
+                # Already greeted on an earlier answered event; don't repeat.
+                return
             dialout_manager.mark_successful()
-            # Outbound call: Hailey speaks first. Mark the gate so it doesn't
-            # double-fire later, then inject the greeting as LLM response frames
-            # so it goes through the same TTS path as all other speech (natural
-            # prosody, no "recorded" quality difference).
+            # Outbound call: Hailey speaks first. Disable the gate (it would
+            # otherwise fire on the first context frame) and queue the greeting
+            # from the start of the pipeline as LLM response frames, so it goes
+            # through the same TTS path as all other speech (natural prosody, no
+            # "recorded" quality) and is captured into the conversation context.
             greeting_gate._greeted = True
-            await greeting_gate.push_frame(LLMFullResponseStartFrame())
-            await greeting_gate.push_frame(LLMTextFrame(greeting_line(lead)))
-            await greeting_gate.push_frame(LLMFullResponseEndFrame())
+            await worker.queue_frames(
+                [
+                    LLMFullResponseStartFrame(),
+                    LLMTextFrame(greeting_line(lead)),
+                    LLMFullResponseEndFrame(),
+                ]
+            )
 
         @transport.event_handler("on_dialout_stopped")
         async def on_dialout_stopped(transport, data):
