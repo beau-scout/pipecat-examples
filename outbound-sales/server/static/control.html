@@ -307,7 +307,7 @@
             </tr>`).join("")
         : `<tr><td colspan="8" class="empty">No contacts captured yet.</td></tr>`;
 
-      const allCalls = data.all_calls || [];
+      const allCalls = s.all_calls || [];
       $("allCalls").innerHTML = allCalls.length
         ? allCalls.map(c => `
             <tr>
