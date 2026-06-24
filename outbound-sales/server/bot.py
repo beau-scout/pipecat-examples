@@ -197,8 +197,8 @@ class CallResult:
 def greeting_line(lead: Lead) -> str:
     """Hailey's opening line. Spoken via a canned TTSSpeakFrame, skipping the LLM."""
     if lead.company:
-        return f"Hi, this is Hailey from RunScout — who handles security at {lead.company}?"
-    return "Hi, this is Hailey from RunScout — who handles safety or security at your school?"
+        return f"Hi, my name is Hailey and I'm calling from RunScout. Who's in charge of safety or security at {lead.company}?"
+    return "Hi, my name is Hailey and I'm calling from RunScout. Who's in charge of safety or security at your school?"
 
 
 class CannedGreetingGate(FrameProcessor):
