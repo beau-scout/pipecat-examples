@@ -29,6 +29,7 @@ Run in eval mode for fast, text-only testing::
     PYTHONPATH=. uv run pipecat eval run scenarios/happy_path.yaml
 """
 
+import asyncio
 import json
 import os
 from dataclasses import dataclass, field
@@ -454,11 +455,11 @@ async def run_bot(
         ),
     )
 
-    # CannedGreetingGate intercepts the first LLMContextFrame and injects the
-    # greeting before the LLM sees it — skipping an LLM round-trip. For real
-    # calls we trigger it from on_dialout_answered (below) so Hailey speaks
-    # first without waiting for the person to say something. Eval runs still
-    # rely on the gate firing on the first context frame from the harness.
+    # CannedGreetingGate speaks the fixed opening line, skipping an LLM
+    # round-trip. For real calls we trigger it from on_first_participant_joined
+    # (below) — once the dialed party's media is bridged — so Hailey speaks
+    # first without the greeting being clipped by PSTN early-media. The gate's
+    # own first-LLMContextFrame trigger is a fallback (and how eval runs greet).
     greeting_gate = CannedGreetingGate(
         greeting_line(lead), as_llm_response=dialout_settings is None
     )
@@ -504,14 +505,22 @@ async def run_bot(
         @transport.event_handler("on_dialout_answered")
         async def on_dialout_answered(transport, data):
             logger.debug(f"Dial-out answered: {data}")
-            already_answered = dialout_manager.is_successful
+            # SIP "callee picked up" — signaling only. The callee's audio is NOT
+            # bridged yet, so we do NOT greet here (a greeting pushed now is
+            # written to the room before the phone leg carries audio and gets
+            # clipped). We only record success; the greeting fires on
+            # on_first_participant_joined below, once media is live.
             dialout_manager.mark_successful()
-            if already_answered:
-                # Duplicate answered event; greeting already delivered.
-                return
-            # Outbound call: Hailey speaks first the moment the callee answers.
-            # deliver() pushes from the gate's position (the proven path to TTS),
-            # so the greeting reliably plays before the person says anything.
+
+        @transport.event_handler("on_first_participant_joined")
+        async def on_first_participant_joined(transport, participant):
+            # The dialed party has joined the room and capture_participant_audio
+            # has bridged their media, so bot->callee audio is now flowing. This
+            # fires exactly once (transport guards it with
+            # _other_participant_has_joined). Small settle delay covers PSTN
+            # early-media so the first words aren't clipped, then Hailey greets.
+            logger.debug(f"First participant joined, delivering greeting: {participant}")
+            await asyncio.sleep(0.5)
             await greeting_gate.deliver()
 
         @transport.event_handler("on_dialout_stopped")
