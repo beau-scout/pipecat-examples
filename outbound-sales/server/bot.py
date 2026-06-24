@@ -302,9 +302,12 @@ async def run_bot(
     ):
         """Save the school/district security decision maker's contact information.
 
-        Call this once you know who is in charge of safety and security and have
-        at least one way to reach them. Read the email back to confirm spelling
-        before calling this.
+        Call this EXACTLY ONCE, near the END of the call, and ONLY after you
+        have actually collected the contact's name AND at least a phone number
+        or an email from the person you're speaking with. Do NOT call it during
+        the greeting, before anyone has given you contact details, or with empty
+        or made-up values — that produces a wrong "let me jot that down" moment.
+        Read the email back to confirm spelling before calling this.
 
         Args:
             name: The security decision maker's full name.
@@ -359,10 +362,17 @@ async def run_bot(
     @llm.event_handler("on_function_calls_started")
     async def on_function_calls_started(service, function_calls):
         # Tool-call turns cost a second LLM round-trip (call, then the spoken
-        # reply). Mask it with a short filler while the contact info saves.
-        # No filler for end_call: its goodbye was already spoken.
-        if any(fc.function_name == "save_contact_info" for fc in function_calls):
-            await tts.queue_frame(TTSSpeakFrame("One sec, let me jot that down."))
+        # reply). Mask it with a short filler while the contact info saves — but
+        # ONLY for a real save that carries a phone or email. A premature or
+        # empty save_contact_info call (which the tool rejects) must not make
+        # Hailey blurt "let me jot that down" with nothing to jot. No filler for
+        # end_call: its goodbye was already spoken.
+        for fc in function_calls:
+            if fc.function_name == "save_contact_info":
+                args = fc.arguments or {}
+                if args.get("phone") or args.get("email"):
+                    await tts.queue_frame(TTSSpeakFrame("One sec, let me jot that down."))
+                break
 
     # Direct functions listed in the context are registered with the LLM automatically
     context = LLMContext(tools=[save_contact_info, end_call])
