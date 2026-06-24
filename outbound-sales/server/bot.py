@@ -195,14 +195,10 @@ class CallResult:
 
 
 def greeting_line(lead: Lead) -> str:
-    """Hailey's opening line. Spoken via a canned TTSSpeakFrame, skipping the LLM.
-
-    Kept as plain, natural speech — no spelled-out domain ("dot A I"), which the
-    TTS renders stiffly. The company name alone reads warm and clear.
-    """
+    """Hailey's opening line. Spoken via a canned TTSSpeakFrame, skipping the LLM."""
     if lead.company:
-        return f"Hi there! This is Hailey with RunScout. Have I reached {lead.company}?"
-    return "Hi there! This is Hailey with RunScout. How are you doing today?"
+        return f"Hi, this is Hailey from RunScout — who handles security at {lead.company}?"
+    return "Hi, this is Hailey from RunScout — who handles safety or security at your school?"
 
 
 class CannedGreetingGate(FrameProcessor):
@@ -260,8 +256,8 @@ Your goal is simple: find out who is in charge of safety and security at this sc
 What RunScout is (give this when they ask what RunScout is or why you're calling, in a sentence or two): RunScout is a school safety platform. It connects to a school's existing security cameras to automatically detect everyday safety incidents — like a student leaving the building when they shouldn't (elopement) or a door propped open — and the moment it detects one, it sends the security team an email and a text alert with video of what happened.
 
 Follow this flow:
-1. The person answering speaks first, and your opening line ("{greeting_line(lead)}") is sent for you automatically. Don't repeat it; continue the conversation from their reply.
-2. Warmly ask who is in charge of safety or security at the school or district. It's fine to briefly mention you're with RunScout, a school safety platform, so they have context.
+1. Your opening line ("{greeting_line(lead)}") is sent automatically. Don't repeat it; pick up from their reply. You've already introduced yourself and asked the security question — don't ask it again if they answered it.
+2. If they didn't answer the security question, follow up naturally. If they ask why you're calling first, give your one-line RunScout explanation and then ask again.
 3. Collect that person's details from whoever you're speaking with: their name, role, an email address, and a direct phone number plus an extension if it goes through a switchboard.
 4. Ask for a good time, during the school day, for one of our founders to give them a quick call. Get a specific day and a time window.
 5. If they ask why you're calling or what RunScout is, give your explanation above, then return to collecting the details.
