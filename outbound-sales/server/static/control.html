@@ -233,6 +233,16 @@
     $("modalClose").onclick = () => modalBg.classList.remove("open");
     modalBg.onclick = (e) => { if (e.target === modalBg) modalBg.classList.remove("open"); };
 
+    // Keyed store so transcript buttons don't embed JSON in onclick attributes
+    // (which breaks when values contain double-quotes).
+    let _callStore = {};
+    document.addEventListener("click", e => {
+      const btn = e.target.closest("[data-call-id]");
+      if (!btn) return;
+      const c = _callStore[btn.dataset.callId];
+      if (c) openTranscript(c.call_id, c.school, c.outcome);
+    });
+
     async function openTranscript(callId, school, outcome) {
       modalTitle.textContent = esc(school) || "Transcript";
       modalSub.textContent = `Outcome: ${esc(outcome)}  ·  call ${callId}`;
@@ -308,6 +318,9 @@
         : `<tr><td colspan="8" class="empty">No contacts captured yet.</td></tr>`;
 
       const allCalls = s.all_calls || [];
+      // Refresh the store so data-call-id buttons can look up their data.
+      _callStore = {};
+      allCalls.forEach(c => { _callStore[c.call_id] = c; });
       $("allCalls").innerHTML = allCalls.length
         ? allCalls.map(c => `
             <tr>
@@ -316,7 +329,7 @@
               <td>${outcomeBadge(c.outcome)}</td>
               <td style="color:var(--muted);font-size:13px">${esc(c.notes) || ""}</td>
               <td>${c.has_transcript
-                ? `<button class="btn-xs" onclick="openTranscript(${JSON.stringify(c.call_id)},${JSON.stringify(c.school)},${JSON.stringify(c.outcome)})">View transcript</button>`
+                ? `<button class="btn-xs" data-call-id="${esc(c.call_id)}">View transcript</button>`
                 : `<span style="color:var(--muted);font-size:12px">—</span>`}</td>
             </tr>`).join("")
         : `<tr><td colspan="5" class="empty">No calls yet.</td></tr>`;
