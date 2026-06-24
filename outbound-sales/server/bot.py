@@ -29,8 +29,9 @@ Run in eval mode for fast, text-only testing::
     PYTHONPATH=. uv run pipecat eval run scenarios/happy_path.yaml
 """
 
+import json
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from dotenv import load_dotenv
@@ -163,6 +164,8 @@ class CallResult:
     notes: str = ""
     # True once end_call has started the graceful pipeline shutdown.
     ending: bool = False
+    # Full conversation transcript, populated at call end from the LLM context.
+    transcript: list[dict] = field(default_factory=list)
 
     @property
     def outcome(self) -> str:
@@ -187,6 +190,7 @@ class CallResult:
             "contact_email": contact.get("email", ""),
             "contact_best_time": contact.get("best_time", ""),
             "notes": self.notes,
+            "transcript": json.dumps(self.transcript),
         }
 
 
@@ -529,6 +533,27 @@ async def run_bot(
         # dialer.py, so it must be sent no matter how the call ended. This is
         # where a real app would write to a database; the demo logs the row
         # and hands it to server.py, which keeps it in memory.
+        # Extract the full conversation transcript from the LLM context so it
+        # can be reviewed in the dashboard for prompt improvement.
+        result.transcript = []
+        for m in context.messages:
+            role = m.get("role")
+            if role not in ("user", "assistant"):
+                continue
+            content = m.get("content", "")
+            if isinstance(content, str):
+                text = content.strip()
+            elif isinstance(content, list):
+                # Anthropic content blocks — extract text parts, skip tool calls
+                text = " ".join(
+                    p.get("text", "") for p in content
+                    if isinstance(p, dict) and p.get("type") == "text"
+                ).strip()
+            else:
+                text = ""
+            if text:
+                result.transcript.append({"role": role, "text": text})
+
         if report_results:
             logger.info(f"Call {call_id}: outcome '{result.outcome}': {result.to_row()}")
             await report_result(result.to_row())

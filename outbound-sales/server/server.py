@@ -121,11 +121,28 @@ def _compute_stats() -> dict:
                 }
             )
     contacts.sort(key=lambda c: c.get("timestamp", ""), reverse=True)
+
+    all_calls = [
+        {
+            "call_id": row.get("call_id", ""),
+            "school": row.get("lead_company", "") or row.get("lead_phone", ""),
+            "outcome": row.get("outcome", "unknown"),
+            "notes": row.get("notes", ""),
+            "timestamp": row.get("timestamp", ""),
+            "has_transcript": bool(
+                row.get("transcript") and row.get("transcript") not in ("[]", "", None)
+            ),
+        }
+        for row in CALL_RESULTS.values()
+    ]
+    all_calls.sort(key=lambda c: c.get("timestamp", ""), reverse=True)
+
     return {
         "total_calls": len(CALL_RESULTS),
         "contacts_captured": len(contacts),
         "outcomes": outcomes,
         "contacts": contacts,
+        "all_calls": all_calls,
     }
 
 
@@ -216,6 +233,15 @@ async def handle_call_result(request: Request) -> JSONResponse:
         # Best effort: enroll_security_contact never raises.
         await enroll_security_contact(row)
     return JSONResponse({"status": "ok"})
+
+
+@app.get("/call/{call_id}")
+async def get_call(call_id: str):
+    """Return the full result row for one call, including its transcript."""
+    row = CALL_RESULTS.get(call_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Call not found")
+    return row
 
 
 @app.get("/results")
