@@ -17,7 +17,7 @@ captured contact, server.py enrolls them in an Apollo sequence for follow-up.
 Required AI services:
 - Deepgram (Speech-to-Text)
 - Anthropic / Claude (LLM)
-- Cartesia (Text-to-Speech)
+- ElevenLabs (Text-to-Speech; default) or Cartesia, via TTS_PROVIDER
 
 Run a real call (see README for the full flow)::
 
@@ -267,16 +267,20 @@ async def run_bot(
     # voice clone on a real call: "cartesia" (default — lowest latency and cost)
     # or "elevenlabs" (higher cloning fidelity). Each provider reads its own
     # voice ID, so flipping the flag swaps both the engine and the voice.
-    tts_provider = os.getenv("TTS_PROVIDER", "cartesia").lower()
+    tts_provider = os.getenv("TTS_PROVIDER", "elevenlabs").lower()
     if tts_provider == "elevenlabs":
         tts = ElevenLabsTTSService(
             api_key=os.getenv("ELEVENLABS_API_KEY"),
             settings=ElevenLabsTTSService.Settings(
-                # Default: ElevenLabs "Rachel". Point ELEVENLABS_VOICE_ID at your clone.
+                # Default: ElevenLabs "Rachel" (warm, natural female). Override
+                # with ELEVENLABS_VOICE_ID to use a different library voice or a
+                # clone — auditioning a few in the ElevenLabs dashboard is the
+                # quickest way to find the one you like best.
                 voice=os.getenv("ELEVENLABS_VOICE_ID", "21m00Tcm4TlvDq8ikWAM"),
-                # Flash v2.5 is ElevenLabs' lowest-latency model — best for the
-                # quick turn-taking a phone call needs.
-                model=os.getenv("ELEVENLABS_MODEL", "eleven_flash_v2_5"),
+                # Turbo v2.5: ElevenLabs' best quality-per-latency model, the
+                # right balance for a real-time phone call. (Flash v2.5 is a hair
+                # faster but flatter; multilingual_v2 is richer but too slow.)
+                model=os.getenv("ELEVENLABS_MODEL", "eleven_turbo_v2_5"),
             ),
         )
     else:
