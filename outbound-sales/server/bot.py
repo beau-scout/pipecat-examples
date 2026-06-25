@@ -371,6 +371,50 @@ class UsageTracker(FrameProcessor):
         await self.push_frame(frame, direction)
 
 
+class SchoolIVRNavigator(IVRNavigator):
+    """IVRNavigator with a classifier prompt tuned for K-12 school phone lines.
+
+    The stock classifier was mis-labeling automated school menus as live people
+    (e.g. Amplus Durango: a recorded menu got <mode>conversation</mode>, so Hailey
+    took over and narrated "Let me press 1" against a looping menu she can't
+    operate). Schools have a specific failure shape: the first thing you hear is
+    almost always an automated greeting ("Thank you for calling …, for attendance
+    press 1"), and re-prompts/timeout/error messages ("I'm sorry, I didn't get
+    that") read as conversational but are still the machine. This prompt biases
+    toward `ivr` for ANY recorded/automated content while still catching the one
+    case that IS a person: a front-office staffer picking up with a short natural
+    greeting and then waiting for us. Misclassifying a menu as a person strands
+    the whole call (the classifier only runs until the first decision); calling a
+    person a menu self-corrects faster, so when genuinely torn, prefer `ivr`.
+
+    Output contract is unchanged: exactly `<mode>ivr</mode>` or
+    `<mode>conversation</mode>`.
+    """
+
+    CLASSIFIER_PROMPT = """You are classifying the FIRST audio heard on an outbound phone call to a K-12 school or district. Decide whether you've reached an AUTOMATED phone system (IVR / recording / voicemail) or a LIVE HUMAN who just answered. Output exactly one tag and nothing else.
+
+Respond `<mode>ivr</mode>` (automated system) when the text shows ANY of:
+- Menu options or keypad instructions: "press 1 for attendance", "for the front office press 2", "to report an absence", "say or press your selection", "enter your student's ID"
+- Recorded openings: "Thank you for calling [School]", "You've reached [School]", "Your call is important to us", "Please listen carefully as our menu options have changed"
+- Hold / transfer / system speech: "please hold", "your call is being connected", "please continue to hold", "the mailbox is full"
+- Voicemail / answering machine: "please leave a message after the tone", "is not available", "at the tone, record your message", a beep
+- Re-prompts, timeouts, or errors (these SOUND conversational but are the machine talking to itself): "I'm sorry, I didn't get your response", "I didn't understand that", "that was not a valid option", "please try again", "are you still there?", "goodbye" with no preceding human turn
+- Hours / closure recordings: "our office hours are", "we are currently closed", "closed for the summer"
+- Operator / directory automation: "for a list of staff", "to spell the name of the person", "for all other inquiries"
+
+Respond `<mode>conversation</mode>` (a live person answered) ONLY when the text reads like a real human who just picked up and is now waiting on you:
+- A short, natural greeting with no menu and no keypad instructions: "Hello", "Hello, Lincoln Elementary", "Good morning, front office", "Main office, this is Pam", "Hi, how can I help you?"
+- A spontaneous question or reply directed at the caller: "Who's this?", "What can I do for you?", "Sorry, who are you trying to reach?"
+- Natural conversational speech: hesitations, "um", informal phrasing, an actual back-and-forth
+
+KEY DISTINCTIONS:
+- A school NAME alone doesn't decide it. "Hello, Lincoln Elementary" (someone picked up) is conversation; "Thank you for calling Lincoln Elementary, for attendance press 1" (recording) is ivr.
+- Anything with menu options, keypad presses, hold/transfer language, or a recorded/voicemail greeting is ivr even if a person's name or a friendly tone appears in it.
+- If the text is garbled, partial, or you are genuinely unsure, choose `<mode>ivr</mode>` — the navigator can wait through a recording, but a misread menu that's handed to a person derails the entire call.
+
+RESPOND ONLY with `<mode>ivr</mode>` or `<mode>conversation</mode>`."""
+
+
 def system_prompt(lead: Lead) -> str:
     if lead.company:
         place_line = f"You are calling {lead.company}."
@@ -537,7 +581,7 @@ async def run_bot(
         "a staff directory. If the only path is a recorded directory with no way to "
         "reach a person, respond with <ivr>stuck</ivr>."
     )
-    ivr_navigator = IVRNavigator(llm=llm, ivr_prompt=ivr_goal)
+    ivr_navigator = SchoolIVRNavigator(llm=llm, ivr_prompt=ivr_goal)
 
     async def save_contact_info(
         params: FunctionCallParams,
