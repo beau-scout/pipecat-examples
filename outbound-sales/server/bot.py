@@ -41,7 +41,9 @@ from pipecat.audio.turn.smart_turn.local_smart_turn_v3 import LocalSmartTurnAnal
 from pipecat.audio.vad.silero import SileroVADAnalyzer
 from pipecat.frames.frames import (
     EndWorkerFrame,
+    Frame,
     FunctionCallResultProperties,
+    TranscriptionFrame,
     TTSSpeakFrame,
 )
 from pipecat.observers.user_bot_latency_observer import UserBotLatencyObserver
@@ -52,7 +54,7 @@ from pipecat.processors.aggregators.llm_response_universal import (
     LLMContextAggregatorPair,
     LLMUserAggregatorParams,
 )
-from pipecat.processors.frame_processor import FrameDirection
+from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from pipecat.runner.types import EvalRunnerArguments, RunnerArguments
 from pipecat.runner.utils import create_transport
 from pipecat.services.anthropic.llm import AnthropicLLMService
@@ -187,6 +189,74 @@ class CallResult:
             "notes": self.notes,
             "transcript": json.dumps(self.transcript),
         }
+
+
+# Deepgram (like Whisper and most STT) hallucinates a stock phrase out of the
+# silence/noise right after a call connects — "Thank you for calling", "Thank
+# you", "Bye", etc. Left unfiltered, the bot treats that phantom phrase as the
+# callee's greeting and replies before any human has spoken (the "she didn't
+# wait for me to say hello" bug — confirmed in a real call transcript where the
+# only user turn was "Thank you for calling."). These are exact, lowercased
+# phrases; a real greeting like "Thank you for calling Lincoln Elementary, how
+# can I help you?" is longer and won't match.
+_STT_HALLUCINATIONS = frozenset(
+    {
+        "thank you",
+        "thank you.",
+        "thanks",
+        "thanks.",
+        "thank you for calling",
+        "thank you for calling.",
+        "thanks for calling",
+        "thanks for calling.",
+        "thank you for watching",
+        "thank you for watching.",
+        "thanks for watching",
+        "thank you very much",
+        "thank you very much.",
+        "bye",
+        "bye.",
+        "bye bye",
+        "goodbye",
+        "you",
+        "you.",
+        "okay",
+        "okay.",
+        "please subscribe",
+    }
+)
+
+
+class StartupHallucinationFilter(FrameProcessor):
+    """Drops stock STT hallucinations until the first real user turn.
+
+    Hailey is the caller, so she must wait for the callee to actually speak.
+    But STT can emit a phantom phrase from the connect-silence, which would
+    otherwise count as the callee's greeting and make Hailey reply too early.
+    This swallows TranscriptionFrames whose text is just a known hallucination
+    (or a single stray character) until a genuine utterance arrives, after
+    which it passes everything through untouched.
+    """
+
+    def __init__(self):
+        super().__init__()
+        self._real_turn_seen = False
+
+    async def process_frame(self, frame: Frame, direction: FrameDirection):
+        await super().process_frame(frame, direction)
+        if (
+            not self._real_turn_seen
+            and direction == FrameDirection.DOWNSTREAM
+            and isinstance(frame, TranscriptionFrame)
+        ):
+            text = (frame.text or "").strip()
+            if len(text) <= 1 or text.lower().rstrip(".!? ") in {
+                h.rstrip(".") for h in _STT_HALLUCINATIONS
+            }:
+                logger.debug(f"Dropping likely STT hallucination on connect: {frame.text!r}")
+                return
+            self._real_turn_seen = True
+        await self.push_frame(frame, direction)
 
 
 def system_prompt(lead: Lead) -> str:
@@ -426,6 +496,9 @@ async def run_bot(
         [
             transport.input(),
             stt,
+            # Drop stock STT hallucinations / robot auto-greeters on connect so
+            # Hailey waits for a real human greeting before replying.
+            StartupHallucinationFilter(),
             user_aggregator,
             llm,
             tts,
