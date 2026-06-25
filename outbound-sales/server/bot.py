@@ -56,7 +56,7 @@ from pipecat.processors.frame_processor import FrameDirection
 from pipecat.runner.types import EvalRunnerArguments, RunnerArguments
 from pipecat.runner.utils import create_transport
 from pipecat.services.anthropic.llm import AnthropicLLMService
-from pipecat.services.cartesia.tts import CartesiaTTSService
+from pipecat.services.cartesia.tts import CartesiaTTSService, GenerationConfig
 from pipecat.services.deepgram.stt import DeepgramSTTService
 from pipecat.services.elevenlabs.tts import ElevenLabsTTSService
 from pipecat.services.llm_service import FunctionCallParams
@@ -288,6 +288,12 @@ async def run_bot(
             settings=CartesiaTTSService.Settings(
                 # Default: Cartesia "Sierra - California Girl"
                 voice=os.getenv("CARTESIA_VOICE_ID", "b7d50908-b17c-442d-ad8d-810c63997ed9"),
+                # Speak a touch slower than default (1.0) for a calmer, less
+                # "automated" delivery — most noticeable on the scripted opening
+                # line. Tune CARTESIA_SPEED (0.6–1.5; lower = slower) to taste.
+                generation_config=GenerationConfig(
+                    speed=float(os.getenv("CARTESIA_SPEED", "0.9")),
+                ),
             ),
         )
 
