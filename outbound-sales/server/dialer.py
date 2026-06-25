@@ -10,9 +10,15 @@ leads.csv has columns ``phone,school`` (the school or district name; an
 optional ``name`` column for a known contact is also honored). For each batch
 it POSTs /dialout to server.py once per lead, then polls the server's /results
 endpoint until every call in the batch has an outcome row (the bot reports one
-when a call ends) or the timeout passes. Leads that already have a result are
-skipped, so re-running the dialer resumes where it left off while server.py
-stays up.
+when a call ends) or the timeout passes.
+
+Call ordering: every number is dialed once first, then the list loops back over
+the "non-contacts" — numbers where no human was reached (voicemail, no answer,
+timeout, hung up, etc.). Numbers that reached a human with a definitive result
+(``contact_captured``, ``refused``, ``wrong_number``) are never re-dialed. Since
+server.py persists results to disk, this resume/retry behavior carries across
+restarts: stop and restart and it picks up where it left off, finishing the
+first pass before retrying any non-contact.
 
 Usage::
 
@@ -146,15 +152,38 @@ async def main():
             logger.error(f"Could not reach server at {args.server}: {e}. Is server.py running?")
             return
 
-        already_called = {row["lead_phone"] for row in results.values()}
-        todo = [lead for lead in leads if lead["phone"] not in already_called]
+        # Outcomes that mean we reached a human and got a definitive answer —
+        # never re-dial these. Everything else (voicemail, no answer, timeout,
+        # hung up, transfer with no info, error) is a "non-contact" we loop back
+        # and retry on a later pass.
+        REACHED_OUTCOMES = {"contact_captured", "refused", "wrong_number"}
+        done_phones = {
+            row["lead_phone"]
+            for row in results.values()
+            if row.get("outcome") in REACHED_OUTCOMES
+        }
+        attempted_phones = {row["lead_phone"] for row in results.values()}
+
+        # Call everyone once FIRST, then restart the list over the non-contacts.
+        # Ordering never-called leads ahead of retries guarantees the whole list
+        # is covered before any number is dialed a second time.
+        never_called = [lead for lead in leads if lead["phone"] not in attempted_phones]
+        retry = [
+            lead
+            for lead in leads
+            if lead["phone"] in attempted_phones and lead["phone"] not in done_phones
+        ]
+        todo = never_called + retry
         if args.limit:
             todo = todo[: args.limit]
-        skipped = len(leads) - len(todo)
-        if skipped:
-            logger.info(f"Skipping {skipped} lead(s) that already have a result")
+
+        done_count = sum(1 for lead in leads if lead["phone"] in done_phones)
+        logger.info(
+            f"{len(leads)} lead(s): {len(never_called)} not yet called, "
+            f"{len(retry)} non-contact(s) to retry, {done_count} already reached a human"
+        )
         if not todo:
-            logger.info("Nothing to do.")
+            logger.info("Nothing to do — every number has already reached a human.")
             return
 
         for i in range(0, len(todo), BATCH_SIZE):
