@@ -43,6 +43,7 @@ from pipecat.frames.frames import (
     EndWorkerFrame,
     Frame,
     FunctionCallResultProperties,
+    OutputDTMFUrgentFrame,
     TranscriptionFrame,
     TTSSpeakFrame,
 )
@@ -301,8 +302,9 @@ Rules:
 - Do NOT ask to be transferred or to speak with the security person now. If they offer to transfer you or put them on the line, politely decline — say there's no need, you just want to leave their details so a senior rep can follow up — and continue collecting the contact info and callback time.
 - Whatever callback time they give you, just accept it. Confirm it back warmly ("Great, after 3 it is — got it") and move on. NEVER push back, negotiate, or suggest a different time, even if they pick an evening or an odd hour. Don't ask "A.M. or P.M." — if it's genuinely ambiguous, assume the most natural reading and confirm it. Their preferred time is always fine.
 - EVERYTHING you say is spoken aloud on the call. NEVER narrate your actions, thoughts, or what you're hearing, and never use stage directions or bracketed/asterisk text (no "*[waiting]*", no "Let me press zero", no "I'm hearing an automated greeting"). Only say words you intend the other person to hear. If you have nothing to say (e.g. you're waiting), say nothing at all.
-- You CANNOT press phone keys or navigate automated menus. If you reach a phone tree or auto-attendant ("press 1 for…", "press 0 for the receptionist", a list of options), do not try to press anything and do not talk to the menu — just stay silent and wait for a live person to come on the line, then start your greeting. If it's clearly only a recording with no path to a person, treat it like a voicemail.
+- Automated phone menus / phone trees: you CAN press keys using the press_keys tool. When you hear a menu ("press 1 for…", "press 0 for…", a list of departments), listen to ALL the options, then press the ONE key that best reaches a live front-office person — the main office, front desk, reception, operator, or "all other matters" / "to speak with someone" / "stay on the line". Examples: "press 0 for the front office" → press_keys "0"; "press 1 for the front office" → "1"; "press star to reach the operator" → "*"; "for all other matters press 6" → "6". Prefer an explicit operator/front-office/main-office option. AVOID department options that won't help: attendance/absence reporting, registrar, counseling, fees/payments, special education, food services, the employee/staff directory. NEVER pick the attendance or "report an absence" option — it leads to an absence-recording voicemail, not a person. Press only ONE key and then wait silently for the menu to route you; don't talk to the menu. If you land somewhere wrong (e.g. an absence-recording line that says "leave your student's name, grade, and reason"), press "*" or "0" to get back to the operator/front office, or if there's no way through, end the call (reason "no_answer"). The moment a live person comes on — a short staffed greeting that waits for you, like "Hello?", "How can I help you?", "Good afternoon, [school]", "[School], this is [name]" — start your greeting immediately; do NOT keep waiting in silence or they'll hang up. If unsure whether the menu is still playing or it's a real person, assume it's a person and greet them. If the menu instead drops you to a voicemail ("leave a message", "after the tone/beep", "record your message", "we did not receive a valid response"), leave your callback voicemail message (see the voicemail rule). Never let a call end in silence: by the end you should have reached a person, left a voicemail, or hit a dead end you've ended cleanly.
 - If you reach a voicemail or answering machine (a recorded greeting, an instruction to leave a message, a beep, a long recorded hours/closure message, and no live person responds): wait for the beep if there is one, then leave a short, friendly message — "Hi, this is Hailey calling from RunScout about school safety. When you have a moment, please give us a call back at {MAIN_CALLBACK_NUMBER}. Thank you!" Then call end_call with reason "voicemail". Do NOT ask a recording questions or try to have a conversation with it.
+- If the recording says the school is closed for summer or an extended break (e.g. "closed for summer break", "we'll reopen on July sixteenth", "out for the summer"): leave the same callback message, then call end_call with reason "closed_for_summer" (not "voicemail") so we hold off re-calling for a while.
 - If they decline, aren't interested, or ask to be removed from your list: apologize once, thank them, say goodbye, and call end_call with reason "refused". Never argue or push back.
 - If this is clearly a wrong number, apologize, say goodbye, and call end_call with reason "wrong_number".
 - Never ask the person which school you've reached or "which school am I calling?" — you dialed a school's main line, so you already know it's a school. If you don't have its name, just proceed to ask who handles safety and security. Asking which school sounds confused and robotic.
@@ -434,7 +436,9 @@ async def run_bot(
         Args:
             reason: Why the call is ending. One of: "contact_captured",
                 "transferred_no_info", "refused", "wrong_number", "voicemail",
-                "other".
+                "closed_for_summer", "other". Use "closed_for_summer" when the
+                school's recording says it is closed for summer/an extended
+                break (so we hold off re-calling for a while).
             notes: Optional one-line note about how the call went.
         """
         result.end_reason = reason
@@ -464,8 +468,35 @@ async def run_bot(
     # with Hailey's own natural acknowledgment and the closing line, producing a
     # doubled, awkward wrap-up. The brief save round-trip is left unmasked.)
 
+    async def press_keys(params: FunctionCallParams, digits: str):
+        """Press one or more keys on the phone keypad to navigate an automated
+        phone menu (sends DTMF tones). Use this to reach a live person — e.g.
+        the option for the front office, main office, reception, or operator.
+
+        Args:
+            digits: The key(s) to press, in order, as a string of characters
+                from 0-9, * and #. Usually a single key like "0" or "1", or "*"
+                for the operator. Example: "0".
+        """
+        cleaned = "".join(c for c in (digits or "") if c in "0123456789*#")
+        if not cleaned:
+            await params.result_callback(
+                {"status": "error", "message": "No valid keypad digits to press."}
+            )
+            return
+        logger.info(f"Call {call_id}: pressing keypad {cleaned}")
+        # Send the tones immediately, then DON'T run the LLM — wait silently for
+        # the menu to route the call (to a person or the next prompt).
+        await params.llm.push_frame(
+            OutputDTMFUrgentFrame.from_string(cleaned), FrameDirection.DOWNSTREAM
+        )
+        await params.result_callback(
+            {"status": "pressed", "digits": cleaned},
+            properties=FunctionCallResultProperties(run_llm=False),
+        )
+
     # Direct functions listed in the context are registered with the LLM automatically
-    context = LLMContext(tools=[save_contact_info, end_call])
+    context = LLMContext(tools=[save_contact_info, end_call, press_keys])
     user_aggregator, assistant_aggregator = LLMContextAggregatorPair(
         context,
         user_params=LLMUserAggregatorParams(
