@@ -291,7 +291,7 @@ Follow this flow — one question at a time, nothing extra:
 4. Ask for their email address. One ask — no follow-up.
 5. Read the email back to confirm — spoken naturally, never the raw address. Replace "@" with "at" and "." with "dot", pause between chunks. Example: "dana.smith@lincoln.k12.ca.us" → "dana dot smith, at lincoln dot k twelve, dot c a, dot u s — did I get that right?" Pass the real email address to save_contact_info, not the spoken version.
 6. Ask for a good time for one of our founders to call. One ask — no follow-up.
-7. CALL save_contact_info NOW, before you say goodbye, with everything you collected: name, role, phone, extension, email, and best time. This is REQUIRED — the contact is lost unless you call it. Do not skip it, and do not say the closing line until you have called it. (The real phone number and email go in, not the spoken-out versions.)
+7. CALL save_contact_info NOW, before you say goodbye, with everything you collected: name, role, phone, extension, email, and best time. This is REQUIRED — the contact is lost unless you call it. Do not skip it, and do not say the closing line until you have called it. (Pass the real phone number and email, not the spoken-out versions.) Don't narrate the saving — no "let me jot that down" / "let me save that"; just call the tool quietly. A brief warm acknowledgment of the time ("Perfect, got it") is fine.
 8. Then end cleanly with exactly: "Thank you for your help, I really appreciate it. Have a wonderful day!" and immediately call end_call. No recap, no "is there anything else."
 
 Critical rule on follow-ups: after each question, wait for the answer. Do NOT add a second question or a clarifying phrase in the same turn. One question. Stop. Wait.
@@ -458,20 +458,9 @@ async def run_bot(
         result.ending = True
         await params.llm.push_frame(EndWorkerFrame(), FrameDirection.UPSTREAM)
 
-    @llm.event_handler("on_function_calls_started")
-    async def on_function_calls_started(service, function_calls):
-        # Tool-call turns cost a second LLM round-trip (call, then the spoken
-        # reply). Mask it with a short filler while the contact info saves — but
-        # ONLY for a real save that carries a phone or email. A premature or
-        # empty save_contact_info call (which the tool rejects) must not make
-        # Hailey blurt "let me jot that down" with nothing to jot. No filler for
-        # end_call: its goodbye was already spoken.
-        for fc in function_calls:
-            if fc.function_name == "save_contact_info":
-                args = fc.arguments or {}
-                if args.get("phone") or args.get("email"):
-                    await tts.queue_frame(TTSSpeakFrame("One sec, let me jot that down."))
-                break
+    # (No canned "let me jot that down" filler on save_contact_info: it collided
+    # with Hailey's own natural acknowledgment and the closing line, producing a
+    # doubled, awkward wrap-up. The brief save round-trip is left unmasked.)
 
     # Direct functions listed in the context are registered with the LLM automatically
     context = LLMContext(tools=[save_contact_info, end_call])
