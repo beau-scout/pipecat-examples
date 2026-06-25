@@ -45,10 +45,12 @@ from pipecat.frames.frames import (
     Frame,
     FunctionCallResultProperties,
     LLMContextFrame,
+    MetricsFrame,
     OutputDTMFUrgentFrame,
     TranscriptionFrame,
     TTSSpeakFrame,
 )
+from pipecat.metrics.metrics import LLMUsageMetricsData
 from pipecat.observers.user_bot_latency_observer import UserBotLatencyObserver
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.worker import PipelineParams, PipelineWorker
@@ -173,6 +175,8 @@ class CallResult:
     ending: bool = False
     # Full conversation transcript, populated at call end from the LLM context.
     transcript: list[dict] = field(default_factory=list)
+    # Per-call LLM token usage, accumulated by UsageTracker (for cost logging).
+    usage: dict = field(default_factory=dict)
 
     @property
     def outcome(self) -> str:
@@ -198,6 +202,7 @@ class CallResult:
             "contact_best_time": contact.get("best_time", ""),
             "notes": self.notes,
             "transcript": json.dumps(self.transcript),
+            "usage": json.dumps(self.usage),
         }
 
 
@@ -298,6 +303,29 @@ class TurnLimiter(FrameProcessor):
                 )
                 await self._on_limit()
                 return  # swallow so the LLM doesn't run on this turn
+        await self.push_frame(frame, direction)
+
+
+class UsageTracker(FrameProcessor):
+    """Accumulates per-call LLM token usage from MetricsFrames so each call's
+    cost can be logged and shown in the dashboard. Counts LLM completions and
+    input/output/cache tokens; the cache split shows prompt caching working."""
+
+    def __init__(self, totals: dict):
+        super().__init__()
+        self._t = totals
+
+    async def process_frame(self, frame: Frame, direction: FrameDirection):
+        await super().process_frame(frame, direction)
+        if isinstance(frame, MetricsFrame):
+            for d in frame.data:
+                if isinstance(d, LLMUsageMetricsData):
+                    u = d.value
+                    self._t["llm_calls"] += 1
+                    self._t["prompt_tokens"] += u.prompt_tokens or 0
+                    self._t["completion_tokens"] += u.completion_tokens or 0
+                    self._t["cache_read_tokens"] += u.cache_read_input_tokens or 0
+                    self._t["cache_creation_tokens"] += u.cache_creation_input_tokens or 0
         await self.push_frame(frame, direction)
 
 
@@ -573,6 +601,13 @@ async def run_bot(
     # confirm the school or go straight to the security question (see the system
     # prompt). No canned first turn, so nothing to clip on PSTN early-media.
     turn_limiter = TurnLimiter(MAX_LLM_TURNS)  # on-limit callback set after worker exists
+    usage_totals = {
+        "llm_calls": 0,
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+        "cache_read_tokens": 0,
+        "cache_creation_tokens": 0,
+    }
     pipeline = Pipeline(
         [
             transport.input(),
@@ -584,6 +619,8 @@ async def run_bot(
             # Cost guard: cap LLM completions per call (stuck-call runaway).
             turn_limiter,
             llm,
+            # Tally LLM token usage (incl. cache hits) for per-call cost logging.
+            UsageTracker(usage_totals),
             tts,
             transport.output(),
             assistant_aggregator,
@@ -715,8 +752,21 @@ async def run_bot(
             if text:
                 result.transcript.append({"role": role, "text": text})
 
+        # Per-call token summary — shows cost and whether prompt caching engaged
+        # (cache reads should be most of the input after the first turn).
+        result.usage = usage_totals
+        u = usage_totals
+        cached_in = u["cache_read_tokens"] + u["cache_creation_tokens"]
+        total_in = u["prompt_tokens"] + cached_in
+        cache_pct = round(100 * u["cache_read_tokens"] / total_in) if total_in else 0
+        logger.info(
+            f"Call {call_id}: outcome '{result.outcome}' | "
+            f"{u['llm_calls']} LLM calls, in={total_in} tok "
+            f"(cache_read={u['cache_read_tokens']}, {cache_pct}% cached), "
+            f"out={u['completion_tokens']} tok"
+        )
+
         if report_results:
-            logger.info(f"Call {call_id}: outcome '{result.outcome}': {result.to_row()}")
             await report_result(result.to_row())
 
 

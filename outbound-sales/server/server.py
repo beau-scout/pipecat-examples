@@ -317,7 +317,21 @@ async def handle_call_result(request: Request) -> JSONResponse:
             detail = f" — {row['contact_name']} ({row.get('contact_role', '')})"
         elif row.get("notes"):
             detail = f" — {row['notes']}"
-        logger.info(f"✓ {who}: {row.get('outcome')}{detail}")
+        # Per-call token/cost summary (so cost is watchable live in this log).
+        cost = ""
+        try:
+            u = json.loads(row.get("usage") or "{}")
+        except (json.JSONDecodeError, TypeError):
+            u = {}
+        if u:
+            cached = u.get("cache_read_tokens", 0)
+            total_in = u.get("prompt_tokens", 0) + cached + u.get("cache_creation_tokens", 0)
+            pct = round(100 * cached / total_in) if total_in else 0
+            cost = (
+                f"  ·  {u.get('llm_calls', 0)} calls, "
+                f"in {total_in} tok ({pct}% cached), out {u.get('completion_tokens', 0)} tok"
+            )
+        logger.info(f"✓ {who}: {row.get('outcome')}{detail}{cost}")
         # On a captured contact, push it to Apollo so the team can follow up.
         # Best effort: enroll_security_contact never raises.
         await enroll_security_contact(row)
