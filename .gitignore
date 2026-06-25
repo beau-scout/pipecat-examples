@@ -242,3 +242,6 @@ credentials.json
 
 # Pipecat
 whisker_setup.py
+# Persisted call results (contains contact PII; do not commit)
+call_results.json
+call_results.json.tmp

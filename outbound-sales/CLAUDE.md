@@ -32,7 +32,7 @@ Control panel: with `server.py` running, open `http://localhost:7867/` to start/
 
 ## Rules and gotchas
 
-- **This is a demo: results are NOT saved to files.** Call outcomes are logged to the terminal and held in server.py's memory (`CALL_RESULTS`). A real production app would write them to a database in `/call_result`. Do not add file or CSV persistence.
+- **Call results persist across restarts.** Outcomes are held in server.py's memory (`CALL_RESULTS`) AND saved to `call_results.json` (override with `RESULTS_FILE`), loaded on startup. This is what lets a campaign resume where it left off: the dialer skips any number already in results, so the saved file = progress. The file holds contact PII and is gitignored. `Clear stats` wipes both memory and the file (so it also resets resume progress). A real production app would use a database instead of a JSON file.
 - The control panel runs the campaign by spawning `dialer.py` as a subprocess (`/campaign/start`); Stop terminates it. Stats come straight from `CALL_RESULTS` via `_compute_stats()`. `apollo_utils.enroll_security_contact` mutates the result row with verified email/phone and a verification note before stats read it.
 - `leads.csv` is `phone,school,region`. The control panel's Region dropdown (from `/regions`) and "Max calls" box pass `--region`/`--limit` to the dialer so a run can be scoped to one state/segment or capped. Always validate on a small region+limit before dialing the whole file (it's thousands of numbers across NV/AZ/CA/TX/UT, charter and private).
 - Apollo is opt-in: with no `APOLLO_API_KEY` the integration is a logged no-op and calls still work. Enrollment defaults to the K-12 sequence, xiomara@runscout.ai, status `paused`. People Match costs 1 Apollo credit per matched contact.

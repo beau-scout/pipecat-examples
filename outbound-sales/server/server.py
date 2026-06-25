@@ -19,6 +19,7 @@ to ensure consistency between local and cloud deployments.
 import asyncio
 import csv
 import datetime
+import json
 import os
 import sys
 import uuid
@@ -53,6 +54,8 @@ async def lifespan(app: FastAPI):
     Creates a shared aiohttp session for making HTTP requests to bot endpoints.
     The session is reused across requests for better performance through connection pooling.
     """
+    # Load any persisted call results so a campaign resumes where it left off.
+    _load_results()
     # Create shared HTTP session for bot API calls
     app.state.http_session = aiohttp.ClientSession()
     logger.info("Created shared HTTP session")
@@ -64,13 +67,43 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 
-# Call results keyed by call_id. This is the demo stand-in for persistence:
-# each result is logged to the terminal and kept in memory while the server
-# runs. A real production app would save these to a database instead.
+# Call results keyed by call_id. Kept in memory while the server runs AND
+# persisted to disk (RESULTS_FILE) so a campaign resumes across restarts: the
+# dialer skips any number that already has a result, so saved history = where
+# the last session left off. A real production app would use a database; a JSON
+# file is enough for a single-operator dialer.
 CALL_RESULTS: dict[str, dict[str, str]] = {}
 
 SERVER_DIR = Path(__file__).parent
 PORT = int(os.getenv("PORT", "7867"))
+
+# Where results are persisted between sessions. Override with RESULTS_FILE.
+RESULTS_FILE = Path(os.getenv("RESULTS_FILE", str(SERVER_DIR / "call_results.json")))
+
+
+def _load_results() -> None:
+    """Load persisted call results into memory on startup (best effort)."""
+    try:
+        with open(RESULTS_FILE) as f:
+            data = json.load(f)
+        if isinstance(data, dict):
+            CALL_RESULTS.update(data)
+            logger.info(f"Loaded {len(CALL_RESULTS)} saved call result(s) from {RESULTS_FILE.name}")
+    except FileNotFoundError:
+        pass
+    except (json.JSONDecodeError, OSError) as e:
+        logger.warning(f"Could not load saved results from {RESULTS_FILE}: {e}")
+
+
+def _save_results() -> None:
+    """Persist all call results to disk (atomic write, best effort)."""
+    try:
+        tmp = RESULTS_FILE.with_suffix(".json.tmp")
+        with open(tmp, "w") as f:
+            json.dump(CALL_RESULTS, f)
+        tmp.replace(RESULTS_FILE)
+    except OSError as e:
+        logger.warning(f"Could not save results to {RESULTS_FILE}: {e}")
 
 # The running batch campaign (dialer.py subprocess), driven from the control
 # page's Start/Stop buttons. Only one campaign runs at a time.
@@ -228,6 +261,7 @@ async def handle_call_result(request: Request) -> JSONResponse:
         logger.debug(f"Ignoring duplicate result for call {call_id}: {row}")
     else:
         CALL_RESULTS[call_id] = row
+        _save_results()  # persist so progress survives a restart
         logger.info(f"Call {call_id} finished ({row.get('outcome')}): {row}")
         # On a captured contact, push it to Apollo so the team can follow up.
         # Best effort: enroll_security_contact never raises.
@@ -336,6 +370,7 @@ async def clear_results():
         raise HTTPException(status_code=409, detail="Stop the campaign before clearing results.")
     count = len(CALL_RESULTS)
     CALL_RESULTS.clear()
+    _save_results()  # persist the cleared state too
     logger.info(f"Cleared {count} result(s)")
     return {"status": "cleared", "cleared": count}
 
