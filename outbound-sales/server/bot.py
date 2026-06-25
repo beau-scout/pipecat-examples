@@ -416,14 +416,22 @@ async def run_bot(
             ),
         )
 
-    # LLM service (Claude). Default to Opus 4.8; override with ANTHROPIC_MODEL
-    # (e.g. claude-haiku-4-5 for the lowest phone-call latency). Thinking is left
-    # off by default — extended thinking would add seconds of dead air per turn.
+    # LLM service (Claude). Default to Sonnet 4.6; override with ANTHROPIC_MODEL
+    # (e.g. claude-haiku-4-5 for the lowest phone-call latency/cost). Thinking is
+    # left off by default — extended thinking would add seconds of dead air.
+    #
+    # Cost: the large static system prompt + tool schemas are the bulk of every
+    # turn's input. enable_prompt_caching marks them cacheable so repeated turns
+    # within a call re-read them at ~10% cost instead of full price — the single
+    # biggest lever on per-call spend. max_tokens caps the (short, spoken) reply
+    # so a turn can't run away generating output.
     llm = AnthropicLLMService(
         api_key=os.getenv("ANTHROPIC_API_KEY"),
         settings=AnthropicLLMService.Settings(
             model=os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-6"),
             system_instruction=system_prompt(lead),
+            enable_prompt_caching=True,
+            max_tokens=int(os.getenv("ANTHROPIC_MAX_TOKENS", "512")),
         ),
     )
 
