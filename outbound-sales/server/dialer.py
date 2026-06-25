@@ -32,6 +32,7 @@ webhook backed by a database, and the dialer would query that.
 import argparse
 import asyncio
 import csv
+import datetime
 import time
 import uuid
 from pathlib import Path
@@ -164,23 +165,37 @@ async def main():
         }
         attempted_phones = {row["lead_phone"] for row in results.values()}
 
+        # Schools that announced a seasonal closure are paused until retry_after
+        # (set by the server, default 30 days out). Skip them until then.
+        now_iso = datetime.datetime.now().isoformat()
+        paused_phones = {
+            row["lead_phone"]
+            for row in results.values()
+            if row.get("retry_after", "") > now_iso
+        }
+
         # Call everyone once FIRST, then restart the list over the non-contacts.
         # Ordering never-called leads ahead of retries guarantees the whole list
-        # is covered before any number is dialed a second time.
+        # is covered before any number is dialed a second time. Paused (seasonal
+        # closure) numbers are held out until their retry_after passes.
         never_called = [lead for lead in leads if lead["phone"] not in attempted_phones]
         retry = [
             lead
             for lead in leads
-            if lead["phone"] in attempted_phones and lead["phone"] not in done_phones
+            if lead["phone"] in attempted_phones
+            and lead["phone"] not in done_phones
+            and lead["phone"] not in paused_phones
         ]
         todo = never_called + retry
         if args.limit:
             todo = todo[: args.limit]
 
         done_count = sum(1 for lead in leads if lead["phone"] in done_phones)
+        paused_count = sum(1 for lead in leads if lead["phone"] in paused_phones)
         logger.info(
             f"{len(leads)} lead(s): {len(never_called)} not yet called, "
-            f"{len(retry)} non-contact(s) to retry, {done_count} already reached a human"
+            f"{len(retry)} non-contact(s) to retry, {done_count} already reached a human, "
+            f"{paused_count} paused (seasonal closure)"
         )
         if not todo:
             logger.info("Nothing to do — every number has already reached a human.")

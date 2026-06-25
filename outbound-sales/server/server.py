@@ -34,6 +34,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
 from loguru import logger
 
+from apollo_utils import enroll_security_contact
 from server_utils import (
     AgentRequest,
     Lead,
@@ -42,7 +43,6 @@ from server_utils import (
     start_bot_local,
     start_bot_production,
 )
-from apollo_utils import enroll_security_contact
 
 load_dotenv()
 
@@ -104,6 +104,45 @@ def _save_results() -> None:
         tmp.replace(RESULTS_FILE)
     except OSError as e:
         logger.warning(f"Could not save results to {RESULTS_FILE}: {e}")
+
+
+# How long to skip a school that says it's closed for an extended/seasonal break
+# before trying it again. Default 30 days; override with CLOSED_PAUSE_DAYS.
+CLOSED_PAUSE_DAYS = int(os.getenv("CLOSED_PAUSE_DAYS", "30"))
+
+# Phrases in a call's notes/transcript that signal an extended seasonal closure
+# (summer/holiday break) rather than just normal after-hours. Kept specific to
+# avoid pausing a school that's only briefly unavailable.
+_CLOSED_HINTS = (
+    "closed for summer",
+    "closed for the summer",
+    "summer break",
+    "out for summer",
+    "out for the summer",
+    "school is out",
+    "closed until",
+    "reopen on",
+    "reopens on",
+    "will reopen",
+    "closed for the season",
+)
+
+
+def _apply_seasonal_pause(row: dict) -> None:
+    """Stamp ``retry_after`` (now + CLOSED_PAUSE_DAYS) when a call reached an
+    extended-closure recording, so the dialer skips that school until then.
+
+    Triggered by the bot's reason (``closed_for_summer``) or, as a fallback that
+    works without redeploying the bot, summer/holiday-closure phrases in the
+    call's notes or transcript.
+    """
+    text = f"{row.get('notes', '')} {row.get('transcript', '')}".lower()
+    is_closed = row.get("outcome") == "closed_for_summer" or any(h in text for h in _CLOSED_HINTS)
+    if is_closed:
+        until = datetime.datetime.now() + datetime.timedelta(days=CLOSED_PAUSE_DAYS)
+        row["retry_after"] = until.isoformat(timespec="seconds")
+        row["seasonal_closure"] = "yes"
+
 
 # The running batch campaign (dialer.py subprocess), driven from the control
 # page's Start/Stop buttons. Only one campaign runs at a time.
@@ -260,6 +299,13 @@ async def handle_call_result(request: Request) -> JSONResponse:
     if call_id in CALL_RESULTS:
         logger.debug(f"Ignoring duplicate result for call {call_id}: {row}")
     else:
+        # Pause schools that announced an extended seasonal closure for 30 days.
+        _apply_seasonal_pause(row)
+        if row.get("retry_after"):
+            logger.info(
+                f"Call {call_id}: seasonal closure — pausing {row.get('lead_company') or row.get('lead_phone')} "
+                f"until {row['retry_after']}"
+            )
         CALL_RESULTS[call_id] = row
         _save_results()  # persist so progress survives a restart
         logger.info(f"Call {call_id} finished ({row.get('outcome')}): {row}")
@@ -357,7 +403,7 @@ async def campaign_stop():
     proc.terminate()
     try:
         await asyncio.wait_for(proc.wait(), timeout=5)
-    except asyncio.TimeoutError:
+    except TimeoutError:
         proc.kill()
     logger.info("Campaign stopped")
     return {"status": "stopped"}
