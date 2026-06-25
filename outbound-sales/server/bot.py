@@ -93,6 +93,12 @@ MAIN_CALLBACK_NUMBER = os.getenv("MAIN_CALLBACK_NUMBER", "210-594-2600")
 # every call: it's force-ended once it exceeds either limit. Tune via env.
 MAX_CALL_SECONDS = int(os.getenv("MAX_CALL_SECONDS", "240"))  # absolute per-call cap
 MAX_LLM_TURNS = int(os.getenv("MAX_LLM_TURNS", "40"))  # max LLM completions per call
+# Hard backstop on TOTAL LLM completions in any mode. The IVRNavigator makes its
+# own completions (classifier + navigation) that bypass TurnLimiter, so a
+# misclassified looping menu can churn calls TurnLimiter never sees. UsageTracker
+# counts every completion via MetricsFrames and force-ends past this. Set above
+# MAX_LLM_TURNS so the conversational guard fires first on normal calls.
+MAX_LLM_CALLS = int(os.getenv("MAX_LLM_CALLS", "60"))
 
 
 class DialoutManager:
@@ -186,6 +192,11 @@ class CallResult:
         if self.contact:
             return "contact_captured"
         if self.end_reason:
+            # A cost-guard cutoff (ran too long / too many turns) on a call where
+            # a real person was on the line is a hangup, not a system label —
+            # report it as such so the dashboard reflects we did reach someone.
+            if self.reached_human and self.end_reason in ("max_turns", "timeout"):
+                return "hung_up"
             return self.end_reason
         # No explicit end reason. If we never reached a live person, the call
         # died in the phone system (menu/IVR dead-end) — that's NOT a hangup and
@@ -316,11 +327,24 @@ class TurnLimiter(FrameProcessor):
 class UsageTracker(FrameProcessor):
     """Accumulates per-call LLM token usage from MetricsFrames so each call's
     cost can be logged and shown in the dashboard. Counts LLM completions and
-    input/output/cache tokens; the cache split shows prompt caching working."""
+    input/output/cache tokens; the cache split shows prompt caching working.
 
-    def __init__(self, totals: dict):
+    Also enforces a mode-independent hard cap on total LLM completions. Unlike
+    TurnLimiter (which only sees LLMContextFrames flowing into the bare LLM and
+    is bypassed by the IVRNavigator's internal run_llm calls), this counts every
+    completion the model actually made via its MetricsFrame, so it catches an
+    IVR-mode runaway — a misclassified menu that loops the navigator/Hailey
+    forever — that the TurnLimiter cannot see."""
+
+    def __init__(self, totals: dict, max_calls: int):
         super().__init__()
         self._t = totals
+        self._max = max_calls
+        self._on_limit = None  # async callback, set once the worker exists
+        self._fired = False
+
+    def set_on_limit(self, callback):
+        self._on_limit = callback
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
@@ -333,6 +357,17 @@ class UsageTracker(FrameProcessor):
                     self._t["completion_tokens"] += u.completion_tokens or 0
                     self._t["cache_read_tokens"] += u.cache_read_input_tokens or 0
                     self._t["cache_creation_tokens"] += u.cache_creation_input_tokens or 0
+                    if (
+                        self._t["llm_calls"] > self._max
+                        and self._on_limit is not None
+                        and not self._fired
+                    ):
+                        self._fired = True
+                        logger.warning(
+                            f"Cost guard: {self._max} LLM completions reached "
+                            "(any mode) — force-ending the call."
+                        )
+                        await self._on_limit()
         await self.push_frame(frame, direction)
 
 
@@ -378,7 +413,8 @@ Rules:
 - Do NOT ask to be transferred or to speak with the security person now. If they offer to transfer you or put them on the line, politely decline — say there's no need, you just want to leave their details so a senior rep can follow up — and continue collecting the contact info and callback time.
 - Whatever callback time they give you, just accept it. Confirm it back warmly ("Great, after 3 it is — got it") and move on. NEVER push back, negotiate, or suggest a different time, even if they pick an evening or an odd hour. Don't ask "A.M. or P.M." — if it's genuinely ambiguous, assume the most natural reading and confirm it. Their preferred time is always fine.
 - EVERYTHING you say is spoken aloud on the call. NEVER narrate your actions, thoughts, or what you're hearing, and never use stage directions or bracketed/asterisk text. Only say words you intend the other person to hear. If you have nothing to say, say nothing at all.
-- By the time you're talking, you've already been connected to a person (phone menus are handled for you before you join). So just talk to them naturally — don't try to press keys or navigate menus.
+- By the time you're talking, you've already been connected to a person (phone menus are handled for you before you join). So just talk to them naturally — don't try to press keys or navigate menus. You CANNOT press keys, so never say you will ("let me press 1", "I'll select option 2") — those words just get spoken aloud and accomplish nothing.
+- If, despite that, it becomes clear you are actually hearing an automated phone menu or recording rather than a live person — e.g. the same options keep repeating ("press 1 for…", "to reach X press Y", "main menu", "your call could not be completed", a timeout prompt) and nobody is actually responding to what you say — do NOT keep talking to it and do NOT narrate pressing keys. You have no way to navigate it, so call end_call with reason "no_answer" right away. Never get stuck in a loop reacting to a recording.
 - If you reach a voicemail or answering machine (a recorded greeting, an instruction to leave a message, a beep, a long recorded hours/closure message, and no live person responds): wait for the beep if there is one, then leave a short, friendly message — "Hi, this is Hailey calling from RunScout about school safety. When you have a moment, please give us a call back at {MAIN_CALLBACK_NUMBER}. Thank you!" Then call end_call with reason "voicemail". Do NOT ask a recording questions or try to have a conversation with it.
 - If the recording says the school is closed for summer or an extended break (e.g. "closed for summer break", "we'll reopen on July sixteenth", "out for the summer"): leave the same callback message, then call end_call with reason "closed_for_summer" (not "voicemail") so we hold off re-calling for a while.
 - If they decline, aren't interested, or ask to be removed from your list: apologize once, thank them, say goodbye, and call end_call with reason "refused". Never argue or push back.
@@ -621,6 +657,7 @@ async def run_bot(
         "cache_read_tokens": 0,
         "cache_creation_tokens": 0,
     }
+    usage_tracker = UsageTracker(usage_totals, MAX_LLM_CALLS)  # on-limit set after worker exists
     # Real calls go through the IVRNavigator (classify menu-vs-human, navigate
     # menus with DTMF, hand off to Hailey on a person). Eval runs use the bare
     # LLM so the scenarios exercise Hailey's conversation directly.
@@ -636,8 +673,9 @@ async def run_bot(
             # Cost guard: cap LLM completions per call (stuck-call runaway).
             turn_limiter,
             llm_stage,
-            # Tally LLM token usage (incl. cache hits) for per-call cost logging.
-            UsageTracker(usage_totals),
+            # Tally LLM token usage (incl. cache hits) for per-call cost logging,
+            # and enforce a mode-independent hard cap on total completions.
+            usage_tracker,
             tts,
             transport.output(),
             assistant_aggregator,
@@ -669,6 +707,7 @@ async def run_bot(
         await worker.cancel()
 
     turn_limiter.set_on_limit(lambda: guard_end("max_turns"))
+    usage_tracker.set_on_limit(lambda: guard_end("max_turns"))
 
     @ivr_navigator.event_handler("on_conversation_detected")
     async def on_conversation_detected(ivr_processor, conversation_history):
@@ -687,8 +726,16 @@ async def run_bot(
     async def on_ivr_status_changed(ivr_processor, status):
         logger.info(f"Call {call_id}: IVR status — {getattr(status, 'value', status)}")
         # Stuck = no menu path to a live person (recorded directory, dead end).
-        # Don't burn the call sitting in the menu; end it as no_answer.
-        if status == IVRStatus.STUCK and not result.ending and not result.end_reason:
+        # Don't burn the call sitting in the menu; end it as no_answer. But if we
+        # ALREADY reached a human (conversation hand-off happened), a later STUCK
+        # must not relabel the call no_answer — that would re-dial someone we just
+        # spoke to. Leave the outcome to the human-conversation path.
+        if (
+            status == IVRStatus.STUCK
+            and not result.ending
+            and not result.end_reason
+            and not result.reached_human
+        ):
             result.end_reason = "no_answer"
             result.notes = "IVR navigation stuck — no path to a live person"
             await worker.cancel()
