@@ -237,16 +237,16 @@ async def handle_dial_out_request(request: Request) -> JSONResponse:
     Raises:
         HTTPException: If request data is invalid or bot fails to start
     """
-    logger.debug("Received dial-out request")
-
     dialout_request = await dialout_request_from_request(request)
-
-    daily_room_config = await create_daily_room(dialout_request, request.app.state.http_session)
 
     # Lead and call_id are optional in the request (e.g. a quick curl test);
     # fall back to the bare phone number and a fresh id.
     lead = dialout_request.lead or Lead(phone=dialout_request.dialout_settings.phone_number)
     call_id = dialout_request.call_id or uuid.uuid4().hex
+    who = f"{lead.company or 'unknown'} ({lead.phone}) [{call_id[:8]}]"
+
+    logger.info(f"📞 {who}: creating room…")
+    daily_room_config = await create_daily_room(dialout_request, request.app.state.http_session)
 
     # Default the caller ID to the purchased number's id from the environment.
     if not dialout_request.dialout_settings.caller_id and os.getenv("CALLER_ID"):
@@ -260,14 +260,16 @@ async def handle_dial_out_request(request: Request) -> JSONResponse:
         call_id=call_id,
     )
 
+    logger.info(f"📞 {who}: starting bot and dialing…")
     try:
         if os.getenv("ENV") == "production":
             await start_bot_production(agent_request, request.app.state.http_session)
         else:
             await start_bot_local(agent_request, request.app.state.http_session)
     except Exception as e:
-        logger.error(f"Error starting bot: {e}")
+        logger.error(f"📞 {who}: failed to start bot: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to start bot: {str(e)}")
+    logger.info(f"📞 {who}: bot started, call ringing")
 
     return JSONResponse(
         {
@@ -308,7 +310,14 @@ async def handle_call_result(request: Request) -> JSONResponse:
             )
         CALL_RESULTS[call_id] = row
         _save_results()  # persist so progress survives a restart
-        logger.info(f"Call {call_id} finished ({row.get('outcome')}): {row}")
+        # Concise per-call line (not the whole row — the transcript is huge).
+        who = f"{row.get('lead_company') or row.get('lead_phone')} [{call_id[:8]}]"
+        detail = ""
+        if row.get("contact_name"):
+            detail = f" — {row['contact_name']} ({row.get('contact_role', '')})"
+        elif row.get("notes"):
+            detail = f" — {row['notes']}"
+        logger.info(f"✓ {who}: {row.get('outcome')}{detail}")
         # On a captured contact, push it to Apollo so the team can follow up.
         # Best effort: enroll_security_contact never raises.
         await enroll_security_contact(row)
@@ -427,4 +436,8 @@ async def clear_results():
 if __name__ == "__main__":
     logger.info(f"Starting server on port {PORT}")
     logger.info(f"Control panel: http://localhost:{PORT}/")
-    uvicorn.run("server:app", host="0.0.0.0", port=PORT, reload=True)
+    # access_log=False silences uvicorn's per-request lines — the control page
+    # and dialer poll /campaign/status and /results every couple seconds, which
+    # otherwise floods the console. The meaningful events (each call's steps and
+    # outcome, campaign start/stop) are logged explicitly via loguru instead.
+    uvicorn.run("server:app", host="0.0.0.0", port=PORT, reload=True, access_log=False)

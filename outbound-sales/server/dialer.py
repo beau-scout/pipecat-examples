@@ -90,7 +90,8 @@ async def run_batch(session: aiohttp.ClientSession, server_url: str, batch: list
         call_id = uuid.uuid4().hex
         try:
             await dial_lead(session, server_url, lead, call_id)
-            logger.info(f"Dialing {lead['phone']} ({lead.get('name') or 'unknown'}) [{call_id}]")
+            school = lead.get("school") or lead.get("company") or "unknown"
+            logger.info(f"☎  dialing {school} ({lead['phone']}) [{call_id[:8]}]")
             pending[call_id] = lead
         except Exception as e:
             logger.error(f"Failed to start call to {lead['phone']}: {e}")
@@ -114,7 +115,8 @@ async def run_batch(session: aiohttp.ClientSession, server_url: str, batch: list
         for call_id in list(pending):
             if call_id in rows:
                 lead = pending.pop(call_id)
-                logger.info(f"Call to {lead['phone']} finished: {rows[call_id]['outcome']}")
+                school = lead.get("school") or lead.get("company") or lead["phone"]
+                logger.info(f"   ↳ {school}: {rows[call_id]['outcome']}")
 
     # Anything still pending gets a timeout row. The bot may still report its
     # own row later; the server keeps the first row per call_id.
