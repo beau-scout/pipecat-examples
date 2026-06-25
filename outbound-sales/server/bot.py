@@ -291,7 +291,8 @@ Follow this flow — one question at a time, nothing extra:
 4. Ask for their email address. One ask — no follow-up.
 5. Read the email back to confirm — spoken naturally, never the raw address. Replace "@" with "at" and "." with "dot", pause between chunks. Example: "dana.smith@lincoln.k12.ca.us" → "dana dot smith, at lincoln dot k twelve, dot c a, dot u s — did I get that right?" Pass the real email address to save_contact_info, not the spoken version.
 6. Ask for a good time for one of our founders to call. One ask — no follow-up.
-7. End cleanly with exactly: "Thank you for your help, I really appreciate it. Have a wonderful day!" then immediately call end_call. No recap, no "is there anything else."
+7. CALL save_contact_info NOW, before you say goodbye, with everything you collected: name, role, phone, extension, email, and best time. This is REQUIRED — the contact is lost unless you call it. Do not skip it, and do not say the closing line until you have called it. (The real phone number and email go in, not the spoken-out versions.)
+8. Then end cleanly with exactly: "Thank you for your help, I really appreciate it. Have a wonderful day!" and immediately call end_call. No recap, no "is there anything else."
 
 Critical rule on follow-ups: after each question, wait for the answer. Do NOT add a second question or a clarifying phrase in the same turn. One question. Stop. Wait.
 
@@ -436,6 +437,14 @@ async def run_bot(
         """
         result.end_reason = reason
         result.notes = notes
+        if reason == "contact_captured" and not result.contact:
+            # The model wrapped up as if it captured a contact but never called
+            # save_contact_info, so there's nothing to persist or enroll. Surface
+            # it loudly instead of recording a hollow "contact_captured" row.
+            logger.warning(
+                f"Call {call_id}: ended as 'contact_captured' but save_contact_info "
+                f"was never called — no contact data saved."
+            )
         logger.info(f"Call {call_id}: ending call ({reason})")
         # Don't run the LLM again; the goodbye was already spoken before this call.
         await params.result_callback(
