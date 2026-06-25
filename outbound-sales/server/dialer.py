@@ -42,7 +42,10 @@ from loguru import logger
 
 BATCH_SIZE = 5
 POLL_INTERVAL_SECS = 5
-CALL_TIMEOUT_SECS = 360
+# Lowered from 360 to bound how long the dialer waits on a stuck call. The bot
+# itself force-ends a call at MAX_CALL_SECONDS (default 240), so this is a hair
+# longer to let the bot's own outcome land first, then it's a hard backstop.
+CALL_TIMEOUT_SECS = 270
 
 
 def read_leads(path: Path) -> list[dict]:
