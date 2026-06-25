@@ -503,14 +503,22 @@ async def run_bot(
     # classifier / navigation / hand-off prompts. Instead the system prompt
     # lives in the context (seeded below) and the IVRNavigator manages it on
     # real calls.
+    anthropic_model = os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-6")
     llm = AnthropicLLMService(
         api_key=os.getenv("ANTHROPIC_API_KEY"),
         settings=AnthropicLLMService.Settings(
-            model=os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-6"),
+            model=anthropic_model,
             enable_prompt_caching=True,
             max_tokens=int(os.getenv("ANTHROPIC_MAX_TOKENS", "512")),
         ),
     )
+    # Surface the active model + caching up front so a deploy's real config is
+    # visible in the logs. Prompt caching needs a cacheable prefix above the
+    # provider minimum (~1024 tok for Sonnet/Opus, ~2048 for Haiku); our system
+    # prompt + tools clear both, so caching engages from the 2nd turn of any
+    # multi-turn call. If the logs show a different model than expected (e.g.
+    # Haiku), the deployment is overriding ANTHROPIC_MODEL.
+    logger.info(f"Call {call_id}: LLM model={anthropic_model}, prompt_caching=on")
 
     # IVR navigator: detects whether we reached an automated phone menu or a live
     # human. For a menu it actively navigates with DTMF (this is what makes the
@@ -709,22 +717,53 @@ async def run_bot(
     turn_limiter.set_on_limit(lambda: guard_end("max_turns"))
     usage_tracker.set_on_limit(lambda: guard_end("max_turns"))
 
-    @ivr_navigator.event_handler("on_conversation_detected")
-    async def on_conversation_detected(ivr_processor, conversation_history):
-        # A live person answered (or the menu handed us to one). Switch the LLM
-        # from IVR-navigation mode to Hailey's conversation: load her system
-        # prompt plus everything heard so far, and run so she responds to them.
-        logger.info(f"Call {call_id}: live person reached — handing off to Hailey")
-        result.reached_human = True
+    # Guards so we only swap into Hailey's conversation prompt once, even if the
+    # navigator fires both on_conversation_detected and a COMPLETED status.
+    handoff_state = {"done": False}
+
+    async def hand_off_to_hailey(ivr_processor, conversation_history, *, run_llm: bool):
+        """Switch the LLM from IVR-navigation mode to Hailey's conversation: load
+        her system prompt plus everything heard so far. With run_llm=True she
+        replies immediately (a live person just spoke); with run_llm=False the
+        prompt is staged and she responds to whatever plays next — used after a
+        menu transfer, where the next audio is either a person's greeting or a
+        department voicemail (her prompt handles both, leaving a callback message
+        on voicemail)."""
+        if handoff_state["done"]:
+            return
+        handoff_state["done"] = True
         messages = [{"role": "developer", "content": system_prompt(lead)}, *conversation_history]
         await ivr_processor.push_frame(
-            LLMMessagesUpdateFrame(messages=messages, run_llm=True),
+            LLMMessagesUpdateFrame(messages=messages, run_llm=run_llm),
             FrameDirection.UPSTREAM,
         )
+
+    @ivr_navigator.event_handler("on_conversation_detected")
+    async def on_conversation_detected(ivr_processor, conversation_history):
+        # A live person answered (or the menu handed us to one). Hand off so
+        # Hailey responds to them now.
+        logger.info(f"Call {call_id}: live person reached — handing off to Hailey")
+        result.reached_human = True
+        await hand_off_to_hailey(ivr_processor, conversation_history, run_llm=True)
 
     @ivr_navigator.event_handler("on_ivr_status_changed")
     async def on_ivr_status_changed(ivr_processor, status):
         logger.info(f"Call {call_id}: IVR status — {getattr(status, 'value', status)}")
+        # Completed = the navigator believes it's being transferred/connected to
+        # the target (front office, operator). What plays next is either a live
+        # person or that department's voicemail — both of which Hailey handles
+        # (she leaves a callback message on voicemail). The bare navigator can't:
+        # left in IVR-navigation mode it just loops <ivr>wait/completed</ivr> at a
+        # voicemail greeting and never leaves a message. So stage Hailey's prompt
+        # now (without speaking — wait for the greeting/voicemail to play first).
+        if status == IVRStatus.COMPLETED and not result.ending and not result.end_reason:
+            logger.info(f"Call {call_id}: navigation completed — staging Hailey for transfer")
+            history = []
+            getter = getattr(ivr_processor, "_get_conversation_history", None)
+            if callable(getter):
+                history = getter()
+            await hand_off_to_hailey(ivr_processor, history, run_llm=False)
+            return
         # Stuck = no menu path to a live person (recorded directory, dead end).
         # Don't burn the call sitting in the menu; end it as no_answer. But if we
         # ALREADY reached a human (conversation hand-off happened), a later STUCK
