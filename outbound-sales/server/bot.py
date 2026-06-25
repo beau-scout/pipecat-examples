@@ -40,13 +40,14 @@ from loguru import logger
 from pipecat.audio.turn.smart_turn.base_smart_turn import SmartTurnParams
 from pipecat.audio.turn.smart_turn.local_smart_turn_v3 import LocalSmartTurnAnalyzerV3
 from pipecat.audio.vad.silero import SileroVADAnalyzer
+from pipecat.extensions.ivr.ivr_navigator import IVRNavigator, IVRStatus
 from pipecat.frames.frames import (
     EndWorkerFrame,
     Frame,
     FunctionCallResultProperties,
     LLMContextFrame,
+    LLMMessagesUpdateFrame,
     MetricsFrame,
-    OutputDTMFUrgentFrame,
     TranscriptionFrame,
     TTSSpeakFrame,
 )
@@ -177,14 +178,20 @@ class CallResult:
     transcript: list[dict] = field(default_factory=list)
     # Per-call LLM token usage, accumulated by UsageTracker (for cost logging).
     usage: dict = field(default_factory=dict)
+    # True once a live person was reached (IVRNavigator conversation hand-off).
+    reached_human: bool = False
 
     @property
     def outcome(self) -> str:
         if self.contact:
             return "contact_captured"
-        # "hung_up" means the call ended without Hailey calling end_call,
-        # e.g. the callee hung up on her.
-        return self.end_reason or "hung_up"
+        if self.end_reason:
+            return self.end_reason
+        # No explicit end reason. If we never reached a live person, the call
+        # died in the phone system (menu/IVR dead-end) — that's NOT a hangup and
+        # should be re-tried, so report "no_answer". Only call it "hung_up" if a
+        # real person was on the line and the call dropped.
+        return "hung_up" if self.reached_human else "no_answer"
 
     def to_row(self) -> dict[str, str]:
         contact = self.contact or {}
@@ -370,8 +377,8 @@ Rules:
 - If someone asks whether you are a real person, a robot, AI, or automated: be honest. Acknowledge that you are an AI voice assistant — say something like "I am an AI assistant calling on behalf of RunScout" — and then continue naturally. Never claim to be a human. Never double down on being a person if pressed. Being straightforward builds more trust than pretending.
 - Do NOT ask to be transferred or to speak with the security person now. If they offer to transfer you or put them on the line, politely decline — say there's no need, you just want to leave their details so a senior rep can follow up — and continue collecting the contact info and callback time.
 - Whatever callback time they give you, just accept it. Confirm it back warmly ("Great, after 3 it is — got it") and move on. NEVER push back, negotiate, or suggest a different time, even if they pick an evening or an odd hour. Don't ask "A.M. or P.M." — if it's genuinely ambiguous, assume the most natural reading and confirm it. Their preferred time is always fine.
-- EVERYTHING you say is spoken aloud on the call. NEVER narrate your actions, thoughts, or what you're hearing, and never use stage directions or bracketed/asterisk text (no "*[waiting]*", no "Let me press zero", no "I'm hearing an automated greeting"). Only say words you intend the other person to hear. If you have nothing to say (e.g. you're waiting), say nothing at all.
-- Automated phone menus / phone trees: you CAN press keys using the press_keys tool. CRITICAL: listen to the ENTIRE menu before you press anything. Do NOT press a key the instant you hear the first relevant option — a better one (an explicit "operator" or "front desk" choice) often comes near the end. While the menu is still reading options to you (you keep hearing new "press X for…" lines), do NOTHING — stay completely silent and keep listening. You'll know the menu has finished when it stops introducing new options: it starts repeating, says something like "to repeat this message press…", offers "to speak to someone / for all other matters / stay on the line", or pauses after the last option. ONLY THEN, weigh all the options you heard and press the SINGLE key that best reaches a live front-office person — the main office, front desk, reception, operator, or "all other matters" / "to speak with someone" / "stay on the line". Examples: "press 0 for the front office" → press_keys "0"; "press 1 for the front office" → "1"; "press star to reach the operator" → "*"; "for all other matters press 6" → "6". Prefer an explicit operator/front-office/main-office option over any single department. AVOID department options that won't help: attendance/absence reporting, registrar, counseling, fees/payments, special education, food services, the employee/staff directory. NEVER pick the attendance or "report an absence" option — it leads to an absence-recording voicemail, not a person. Press only ONE key and then wait silently for the menu to route you; don't talk to the menu. If you land somewhere wrong (e.g. an absence-recording line that says "leave your student's name, grade, and reason"), press "*" or "0" to get back to the operator/front office, or if there's no way through, end the call (reason "no_answer"). The moment a live person comes on — a short staffed greeting that waits for you, like "Hello?", "How can I help you?", "Good afternoon, [school]", "[School], this is [name]" — start your greeting immediately; do NOT keep waiting in silence or they'll hang up. If unsure whether the menu is still playing or it's a real person, assume it's a person and greet them. If the menu instead drops you to a voicemail ("leave a message", "after the tone/beep", "record your message", "we did not receive a valid response"), leave your callback voicemail message (see the voicemail rule). Never let a call end in silence: by the end you should have reached a person, left a voicemail, or hit a dead end you've ended cleanly.
+- EVERYTHING you say is spoken aloud on the call. NEVER narrate your actions, thoughts, or what you're hearing, and never use stage directions or bracketed/asterisk text. Only say words you intend the other person to hear. If you have nothing to say, say nothing at all.
+- By the time you're talking, you've already been connected to a person (phone menus are handled for you before you join). So just talk to them naturally — don't try to press keys or navigate menus.
 - If you reach a voicemail or answering machine (a recorded greeting, an instruction to leave a message, a beep, a long recorded hours/closure message, and no live person responds): wait for the beep if there is one, then leave a short, friendly message — "Hi, this is Hailey calling from RunScout about school safety. When you have a moment, please give us a call back at {MAIN_CALLBACK_NUMBER}. Thank you!" Then call end_call with reason "voicemail". Do NOT ask a recording questions or try to have a conversation with it.
 - If the recording says the school is closed for summer or an extended break (e.g. "closed for summer break", "we'll reopen on July sixteenth", "out for the summer"): leave the same callback message, then call end_call with reason "closed_for_summer" (not "voicemail") so we hold off re-calling for a while.
 - If they decline, aren't interested, or ask to be removed from your list: apologize once, thank them, say goodbye, and call end_call with reason "refused". Never argue or push back.
@@ -453,15 +460,40 @@ async def run_bot(
     # within a call re-read them at ~10% cost instead of full price — the single
     # biggest lever on per-call spend. max_tokens caps the (short, spoken) reply
     # so a turn can't run away generating output.
+    # NOTE: system_instruction is intentionally NOT set here. The Anthropic
+    # adapter gives a service-level system_instruction absolute priority over
+    # any system message in the context (base_llm_adapter._resolve_system_
+    # instruction), which would stop the IVRNavigator from swapping in its
+    # classifier / navigation / hand-off prompts. Instead the system prompt
+    # lives in the context (seeded below) and the IVRNavigator manages it on
+    # real calls.
     llm = AnthropicLLMService(
         api_key=os.getenv("ANTHROPIC_API_KEY"),
         settings=AnthropicLLMService.Settings(
             model=os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-6"),
-            system_instruction=system_prompt(lead),
             enable_prompt_caching=True,
             max_tokens=int(os.getenv("ANTHROPIC_MAX_TOKENS", "512")),
         ),
     )
+
+    # IVR navigator: detects whether we reached an automated phone menu or a live
+    # human. For a menu it actively navigates with DTMF (this is what makes the
+    # bot ACT on menus — the bare LLM never even ran on continuous menu audio
+    # because turn-taking treats a recording as "never finished"). When a human
+    # is reached it fires on_conversation_detected and we hand off to Hailey's
+    # normal conversation (below).
+    ivr_goal = (
+        f"You are calling {lead.company or 'a school'} on behalf of RunScout, and you "
+        "need to reach a LIVE PERSON. Navigate the phone menu to the front office, "
+        "main office, reception, or operator — whatever option connects you to a real "
+        "person who can help or transfer you. Prefer options worded like 'front "
+        "office', 'main office', 'operator', 'reception', 'to speak with someone', or "
+        "'all other matters'. NEVER choose attendance, absence reporting, the "
+        "registrar, counseling, fees or payments, special education, food services, or "
+        "a staff directory. If the only path is a recorded directory with no way to "
+        "reach a person, respond with <ivr>stuck</ivr>."
+    )
+    ivr_navigator = IVRNavigator(llm=llm, ivr_prompt=ivr_goal)
 
     async def save_contact_info(
         params: FunctionCallParams,
@@ -544,36 +576,17 @@ async def run_bot(
     # (No canned "let me jot that down" filler on save_contact_info: it collided
     # with Hailey's own natural acknowledgment and the closing line, producing a
     # doubled, awkward wrap-up. The brief save round-trip is left unmasked.)
+    # (Phone-menu / DTMF navigation is handled by the IVRNavigator below, not a
+    # tool, so there's no press_keys function here anymore.)
 
-    async def press_keys(params: FunctionCallParams, digits: str):
-        """Press one or more keys on the phone keypad to navigate an automated
-        phone menu (sends DTMF tones). Use this to reach a live person — e.g.
-        the option for the front office, main office, reception, or operator.
-
-        Args:
-            digits: The key(s) to press, in order, as a string of characters
-                from 0-9, * and #. Usually a single key like "0" or "1", or "*"
-                for the operator. Example: "0".
-        """
-        cleaned = "".join(c for c in (digits or "") if c in "0123456789*#")
-        if not cleaned:
-            await params.result_callback(
-                {"status": "error", "message": "No valid keypad digits to press."}
-            )
-            return
-        logger.info(f"Call {call_id}: pressing keypad {cleaned}")
-        # Send the tones immediately, then DON'T run the LLM — wait silently for
-        # the menu to route the call (to a person or the next prompt).
-        await params.llm.push_frame(
-            OutputDTMFUrgentFrame.from_string(cleaned), FrameDirection.DOWNSTREAM
-        )
-        await params.result_callback(
-            {"status": "pressed", "digits": cleaned},
-            properties=FunctionCallResultProperties(run_llm=False),
-        )
-
-    # Direct functions listed in the context are registered with the LLM automatically
-    context = LLMContext(tools=[save_contact_info, end_call, press_keys])
+    # Seed Hailey's system prompt into the context (since it's not a service-level
+    # system_instruction). On eval runs the bare LLM uses this directly; on real
+    # calls the IVRNavigator swaps it for its classifier/IVR prompts and restores
+    # Hailey's on hand-off. Direct functions in the context register automatically.
+    context = LLMContext(
+        messages=[{"role": "system", "content": system_prompt(lead)}],
+        tools=[save_contact_info, end_call],
+    )
     user_aggregator, assistant_aggregator = LLMContextAggregatorPair(
         context,
         user_params=LLMUserAggregatorParams(
@@ -608,6 +621,10 @@ async def run_bot(
         "cache_read_tokens": 0,
         "cache_creation_tokens": 0,
     }
+    # Real calls go through the IVRNavigator (classify menu-vs-human, navigate
+    # menus with DTMF, hand off to Hailey on a person). Eval runs use the bare
+    # LLM so the scenarios exercise Hailey's conversation directly.
+    llm_stage = ivr_navigator if dialout_settings is not None else llm
     pipeline = Pipeline(
         [
             transport.input(),
@@ -618,7 +635,7 @@ async def run_bot(
             user_aggregator,
             # Cost guard: cap LLM completions per call (stuck-call runaway).
             turn_limiter,
-            llm,
+            llm_stage,
             # Tally LLM token usage (incl. cache hits) for per-call cost logging.
             UsageTracker(usage_totals),
             tts,
@@ -652,6 +669,29 @@ async def run_bot(
         await worker.cancel()
 
     turn_limiter.set_on_limit(lambda: guard_end("max_turns"))
+
+    @ivr_navigator.event_handler("on_conversation_detected")
+    async def on_conversation_detected(ivr_processor, conversation_history):
+        # A live person answered (or the menu handed us to one). Switch the LLM
+        # from IVR-navigation mode to Hailey's conversation: load her system
+        # prompt plus everything heard so far, and run so she responds to them.
+        logger.info(f"Call {call_id}: live person reached — handing off to Hailey")
+        result.reached_human = True
+        messages = [{"role": "developer", "content": system_prompt(lead)}, *conversation_history]
+        await ivr_processor.push_frame(
+            LLMMessagesUpdateFrame(messages=messages, run_llm=True),
+            FrameDirection.UPSTREAM,
+        )
+
+    @ivr_navigator.event_handler("on_ivr_status_changed")
+    async def on_ivr_status_changed(ivr_processor, status):
+        logger.info(f"Call {call_id}: IVR status — {getattr(status, 'value', status)}")
+        # Stuck = no menu path to a live person (recorded directory, dead end).
+        # Don't burn the call sitting in the menu; end it as no_answer.
+        if status == IVRStatus.STUCK and not result.ending and not result.end_reason:
+            result.end_reason = "no_answer"
+            result.notes = "IVR navigation stuck — no path to a live person"
+            await worker.cancel()
 
     async def call_watchdog():
         """Absolute per-call time cap — backstop for guard cases the turn
