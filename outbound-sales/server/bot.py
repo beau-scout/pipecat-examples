@@ -17,7 +17,7 @@ captured contact, server.py enrolls them in an Apollo sequence for follow-up.
 Required AI services:
 - Deepgram (Speech-to-Text)
 - Anthropic / Claude (LLM)
-- ElevenLabs (Text-to-Speech; default) or Cartesia, via TTS_PROVIDER
+- Cartesia (Text-to-Speech; default) or ElevenLabs, via TTS_PROVIDER
 
 Run a real call (see README for the full flow)::
 
@@ -267,7 +267,7 @@ async def run_bot(
     # voice clone on a real call: "cartesia" (default — lowest latency and cost)
     # or "elevenlabs" (higher cloning fidelity). Each provider reads its own
     # voice ID, so flipping the flag swaps both the engine and the voice.
-    tts_provider = os.getenv("TTS_PROVIDER", "elevenlabs").lower()
+    tts_provider = os.getenv("TTS_PROVIDER", "cartesia").lower()
     if tts_provider == "elevenlabs":
         tts = ElevenLabsTTSService(
             api_key=os.getenv("ELEVENLABS_API_KEY"),
