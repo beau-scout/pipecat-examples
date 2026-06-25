@@ -332,6 +332,19 @@ async def handle_call_result(request: Request) -> JSONResponse:
                 f"in {total_in} tok ({pct}% cached), out {u.get('completion_tokens', 0)} tok"
             )
         logger.info(f"✓ {who}: {row.get('outcome')}{detail}{cost}")
+        # Print the full transcript to the terminal for live debugging.
+        try:
+            turns = json.loads(row.get("transcript") or "[]")
+        except (json.JSONDecodeError, TypeError):
+            turns = []
+        if turns:
+            lines = "\n".join(
+                f"      {'Hailey' if t.get('role') == 'assistant' else 'Caller':6}  {t.get('text', '')}"
+                for t in turns
+            )
+            logger.info(f"  transcript [{call_id[:8]}]:\n{lines}")
+        else:
+            logger.info(f"  transcript [{call_id[:8]}]: (none — bot never spoke)")
         # On a captured contact, push it to Apollo so the team can follow up.
         # Best effort: enroll_security_contact never raises.
         await enroll_security_contact(row)
