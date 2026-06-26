@@ -65,6 +65,7 @@ from pipecat.processors.aggregators.llm_response_universal import (
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from pipecat.runner.types import EvalRunnerArguments, RunnerArguments
 from pipecat.runner.utils import create_transport
+from pipecat.adapters.services.anthropic_adapter import AnthropicLLMAdapter
 from pipecat.services.anthropic.llm import AnthropicLLMService
 from pipecat.services.cartesia.tts import CartesiaTTSService, GenerationConfig
 from pipecat.services.deepgram.stt import DeepgramSTTService
@@ -114,6 +115,60 @@ VOICEMAIL_FALLBACK_SECS = float(os.getenv("VOICEMAIL_FALLBACK_SECS", "6"))
 # 2.0s; on hand-off to a human we restore a snappier value so Hailey isn't
 # sluggish for the rest of the call.
 CONVERSATION_VAD_STOP_SECS = float(os.getenv("CONVERSATION_VAD_STOP_SECS", "0.8"))
+
+
+class _CachingAnthropicLLMAdapter(AnthropicLLMAdapter):
+    """Anthropic adapter that also caches the static system + tools prefix.
+
+    Pipecat's stock adapter, with prompt caching on, marks only the last TWO
+    user messages with `cache_control`. The Anthropic API caches everything
+    before a breakpoint (render order is tools -> system -> messages), so the
+    large static prefix — the tool schemas + Hailey's ~2.2k-token system prompt
+    — already rides along behind those message breakpoints. But that's
+    incidental: it only holds while the moving message breakpoint stays within
+    the API's 20-block lookback of the previous request's breakpoint, which a
+    long IVR navigation or a long call can blow past, silently re-writing the
+    whole prefix at full price.
+
+    This override adds ONE more breakpoint, on the system block itself. Because
+    tools render before system, a marker there caches tools + system together at
+    a STABLE, front-of-prompt breakpoint that never moves — so the biggest,
+    most-repeated chunk of every turn is cached from turn two onward regardless
+    of how long the call runs or how the message breakpoints drift. The API
+    allows 4 breakpoints and Pipecat uses 2, so this is well within budget.
+    Marking a system prompt below the model's minimum cacheable size (the IVR
+    classifier/navigation sub-prompts) is a silent no-op, not an error, so those
+    paths are unaffected.
+    """
+
+    def get_llm_invocation_params(self, context, enable_prompt_caching, system_instruction=None):
+        params = super().get_llm_invocation_params(
+            context,
+            enable_prompt_caching=enable_prompt_caching,
+            system_instruction=system_instruction,
+        )
+        if enable_prompt_caching:
+            system = params.get("system")
+            # Only a non-empty string system prompt is cacheable here. When the
+            # context has no system message the adapter returns NOT_GIVEN (a
+            # sentinel, not a str), which we leave untouched.
+            if isinstance(system, str) and system:
+                params["system"] = [
+                    {"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}
+                ]
+        return params
+
+
+class CachingAnthropicLLMService(AnthropicLLMService):
+    """AnthropicLLMService that caches the static system + tools prefix too.
+
+    Drop-in for AnthropicLLMService; differs only in swapping the adapter for
+    one that adds a dedicated system-block cache breakpoint (see
+    _CachingAnthropicLLMAdapter). Generation behavior is unchanged — caching is
+    invisible to the model's output; it only changes what the API bills.
+    """
+
+    adapter_class = _CachingAnthropicLLMAdapter
 
 
 class DialoutManager:
@@ -589,12 +644,16 @@ async def run_bot(
     # Cost: the large static system prompt + tool schemas are the bulk of every
     # turn's input. enable_prompt_caching marks them cacheable so repeated turns
     # within a call re-read them at ~10% cost instead of full price — the single
-    # biggest lever on per-call spend. Pipecat's Anthropic adapter implements this
-    # by putting a `cache_control: ephemeral` breakpoint on the last two user
-    # messages; the Anthropic API then caches the ENTIRE prefix before each
-    # breakpoint (tools + system + earlier turns), so the static system prompt is
-    # cached even though it carries no marker of its own. max_tokens caps the
-    # (short, spoken) reply so a turn can't run away generating output.
+    # biggest lever on per-call spend. Pipecat's stock adapter puts a
+    # `cache_control: ephemeral` breakpoint on the last two user messages; the
+    # Anthropic API then caches the ENTIRE prefix before each breakpoint (tools +
+    # system + earlier turns). CachingAnthropicLLMService adds one more breakpoint
+    # on the system block (which, since tools render first, caches tools + system
+    # together) so that static prefix has its OWN stable front-of-prompt cache
+    # point instead of only riding behind the moving message breakpoints — keeping
+    # it cached even on long calls that would otherwise drift past the API's
+    # 20-block cache lookback. max_tokens caps the (short, spoken) reply so a turn
+    # can't run away generating output.
     #
     # CACHING THRESHOLD — this constrains the model choice. Anthropic only caches a
     # prefix at/above a per-model minimum: 2048 tokens for Sonnet 4.6, but 4096 for
@@ -615,12 +674,17 @@ async def run_bot(
     # lives in the context (seeded below) and the IVRNavigator manages it on
     # real calls.
     anthropic_model = os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-6")
-    llm = AnthropicLLMService(
+    llm = CachingAnthropicLLMService(
         api_key=os.getenv("ANTHROPIC_API_KEY"),
-        settings=AnthropicLLMService.Settings(
+        settings=CachingAnthropicLLMService.Settings(
             model=anthropic_model,
             enable_prompt_caching=True,
-            max_tokens=int(os.getenv("ANTHROPIC_MAX_TOKENS", "512")),
+            # Hailey's replies are spoken aloud and the prompt holds her to "one
+            # or two sentences"; the longest legitimate turn (the RunScout pitch)
+            # is ~90 output tokens. 200 keeps >2x headroom over that while capping
+            # output cost (output is $15/1M on Sonnet) and bounding a pathological
+            # runaway turn. Was 512 — far above anything a spoken turn needs.
+            max_tokens=int(os.getenv("ANTHROPIC_MAX_TOKENS", "200")),
         ),
     )
     # Surface the active model so a deploy's real config is visible in the logs
