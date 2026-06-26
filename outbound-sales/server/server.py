@@ -111,21 +111,26 @@ def _save_results() -> None:
 # before trying it again. Default 30 days; override with CLOSED_PAUSE_DAYS.
 CLOSED_PAUSE_DAYS = int(os.getenv("CLOSED_PAUSE_DAYS", "30"))
 
-# Phrases in a call's notes/transcript that signal an extended seasonal closure
-# (summer/holiday break) rather than just normal after-hours. Kept specific to
-# avoid pausing a school that's only briefly unavailable.
+# Phrases that signal an EXTENDED seasonal closure (summer/holiday break), not just
+# normal after-hours. The bot's explicit ``closed_for_summer`` reason is the primary
+# trigger; this text fallback is deliberately narrow to multi-word seasonal phrases.
+# Broad daily/weekly wording ("closed until", "reopen on", "will reopen", "school is
+# out") was REMOVED — it matched after-hours messages like "closed until 8am" /
+# "reopen on Monday" and wrongly paused open schools for 30 days.
 _CLOSED_HINTS = (
     "closed for summer",
     "closed for the summer",
     "summer break",
-    "out for summer",
     "out for the summer",
-    "school is out",
-    "closed until",
-    "reopen on",
-    "reopens on",
-    "will reopen",
+    "school is out for the summer",
     "closed for the season",
+    "winter break",
+    "spring break",
+    "closed for the holidays",
+    "reopen in august",
+    "reopen in september",
+    "reopens in august",
+    "reopens in september",
 )
 
 
@@ -146,10 +151,47 @@ def _apply_seasonal_pause(row: dict) -> None:
 
 
 # The running batch campaign (dialer.py subprocess), driven from the control
-# page's Start/Stop buttons. Only one campaign runs at a time.
-CAMPAIGN: dict[str, object] = {"proc": None, "started_at": None, "region": None, "limit": None}
+# page's Start/Stop buttons. Only one campaign runs at a time. "spend" is the
+# estimated $ spent on LLM tokens since this campaign started (reset on start).
+CAMPAIGN: dict[str, object] = {
+    "proc": None, "started_at": None, "region": None, "limit": None, "spend": 0.0,
+}
 
 LEADS_CSV = SERVER_DIR / "leads.csv"
+
+# Hard $ ceiling per campaign run. When the estimated LLM spend since the campaign
+# started crosses this, the campaign is auto-stopped — so a batch of stuck/looping
+# calls can't silently run up hundreds of dollars (the per-call cost cap bounds one
+# call; this bounds the whole run). Deliberately conservative; raise it via env for
+# a large full-list run. 0 disables the ceiling.
+CAMPAIGN_SPEND_LIMIT = float(os.getenv("CAMPAIGN_SPEND_LIMIT", "25"))
+
+# Approx Anthropic price per 1M tokens (USD): (input, output, cache_read, cache_write).
+# Used only for the running cost ESTIMATE/ceiling, not billing. Defaults to Sonnet;
+# set COST_MODEL to match the bot's ANTHROPIC_MODEL for a closer estimate.
+_MODEL_PRICES = {
+    "claude-sonnet-4-6": (3.0, 15.0, 0.30, 3.75),
+    "claude-opus-4-8": (15.0, 75.0, 1.50, 18.75),
+    "claude-haiku-4-5": (1.0, 5.0, 0.10, 1.25),
+}
+_COST_MODEL = os.getenv("COST_MODEL", "claude-sonnet-4-6")
+
+
+def _estimate_call_cost(row: dict) -> float:
+    """Estimate one call's LLM cost in dollars from its recorded token usage."""
+    try:
+        u = json.loads(row.get("usage") or "{}")
+    except (json.JSONDecodeError, TypeError):
+        return 0.0
+    if not u:
+        return 0.0
+    pin, pout, pcr, pcw = _MODEL_PRICES.get(_COST_MODEL, _MODEL_PRICES["claude-sonnet-4-6"])
+    return (
+        u.get("prompt_tokens", 0) * pin
+        + u.get("completion_tokens", 0) * pout
+        + u.get("cache_read_tokens", 0) * pcr
+        + u.get("cache_creation_tokens", 0) * pcw
+    ) / 1_000_000
 
 
 def _campaign_running() -> bool:
@@ -246,6 +288,27 @@ async def handle_dial_out_request(request: Request) -> JSONResponse:
     call_id = dialout_request.call_id or uuid.uuid4().hex
     who = f"{lead.company or 'unknown'} ({lead.phone}) [{call_id[:8]}]"
 
+    # Record the provisional "in_progress" row BEFORE creating the room / starting
+    # the bot, so this number counts as attempted from the first moment — not only
+    # when the bot reports an outcome at call end, and not only after the multi-
+    # second room-creation + bot-start. Without this, stopping and restarting a
+    # campaign mid-dial re-dials every in-flight number (the resume logic still
+    # sees it as "never called"), double-dialing the same school. The bot's
+    # terminal outcome overwrites this row when the call ends (see
+    # handle_call_result); if the bot never starts, the dialer posts an error row
+    # (also an overwrite), and a row that never resolves becomes retry-eligible
+    # again after the dialer's cooldown.
+    if call_id not in CALL_RESULTS:
+        CALL_RESULTS[call_id] = {
+            "call_id": call_id,
+            "lead_phone": lead.phone,
+            "lead_name": lead.name or "",
+            "lead_company": lead.company or "",
+            "outcome": "in_progress",
+            "timestamp": datetime.datetime.now().isoformat(timespec="seconds"),
+        }
+        _save_results()
+
     logger.info(f"📞 {who}: creating room…")
     daily_room_config = await create_daily_room(dialout_request, request.app.state.http_session)
 
@@ -271,25 +334,6 @@ async def handle_dial_out_request(request: Request) -> JSONResponse:
         logger.error(f"📞 {who}: failed to start bot: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to start bot: {str(e)}")
     logger.info(f"📞 {who}: bot started, call ringing")
-
-    # Record a provisional "in_progress" row immediately, so this number counts
-    # as attempted the instant the bot starts — not only when it reports an
-    # outcome at call end. Without this, stopping and restarting a campaign
-    # mid-call re-dials every in-flight number (the resume logic still sees it as
-    # "never called"), double-dialing the same school. The bot's terminal outcome
-    # overwrites this row when the call ends (see handle_call_result); an
-    # in_progress row that never resolves (bot crashed) becomes retry-eligible
-    # again after a cooldown in the dialer.
-    if call_id not in CALL_RESULTS:
-        CALL_RESULTS[call_id] = {
-            "call_id": call_id,
-            "lead_phone": lead.phone,
-            "lead_name": lead.name or "",
-            "lead_company": lead.company or "",
-            "outcome": "in_progress",
-            "timestamp": datetime.datetime.now().isoformat(timespec="seconds"),
-        }
-        _save_results()
 
     return JSONResponse(
         {
@@ -319,11 +363,17 @@ async def handle_call_result(request: Request) -> JSONResponse:
         raise HTTPException(status_code=400, detail="Missing 'call_id'")
     row = {"timestamp": datetime.datetime.now().isoformat(timespec="seconds"), **row}
     existing = CALL_RESULTS.get(call_id)
-    # First TERMINAL outcome per call_id wins (so a dialer timeout stands even if
-    # a slow bot reports later). But a provisional "in_progress" row, written at
-    # dial time so restarts don't re-dial in-flight calls, is always replaced by
-    # the real outcome.
-    if existing is not None and existing.get("outcome") != "in_progress":
+    existing_out = existing.get("outcome") if existing else None
+    # First TERMINAL outcome per call_id normally wins (so a dialer timeout stands
+    # even if a slow bot reports later). Two exceptions: a provisional "in_progress"
+    # row (written at dial time so restarts don't re-dial in-flight calls) is always
+    # replaced; and a bot's captured contact OVERRIDES a dialer "timeout" — the
+    # dialer's per-batch timeout can fire moments before a slow bot reports a real
+    # contact, and that captured contact is the authoritative result we can't lose.
+    replaceable = existing_out in (None, "in_progress") or (
+        existing_out == "timeout" and row.get("outcome") == "contact_captured"
+    )
+    if existing is not None and not replaceable:
         logger.debug(f"Ignoring duplicate result for call {call_id}: {row}")
     else:
         # Pause schools that announced an extended seasonal closure for 30 days.
@@ -364,10 +414,28 @@ async def handle_call_result(request: Request) -> JSONResponse:
         except (json.JSONDecodeError, TypeError):
             turns = []
         turn_note = f"  ·  {len(turns)} turns" if turns else "  ·  (bot never spoke)"
-        logger.info(f"✓ {who}: {row.get('outcome')}{detail}{cost}{turn_note}")
+        # Campaign spend ceiling: accumulate this call's estimated $ and, while a
+        # campaign is running, show the running total — and auto-stop the campaign
+        # if it crosses the ceiling so a batch of stuck calls can't run up hundreds.
+        spend_note = ""
+        if _campaign_running():
+            CAMPAIGN["spend"] = float(CAMPAIGN["spend"]) + _estimate_call_cost(row)
+            spend_note = f"  ·  campaign ~${CAMPAIGN['spend']:.2f}"
+        logger.info(f"✓ {who}: {row.get('outcome')}{detail}{cost}{turn_note}{spend_note}")
         # On a captured contact, push it to Apollo so the team can follow up.
         # Best effort: enroll_security_contact never raises.
         await enroll_security_contact(row)
+        if (
+            CAMPAIGN_SPEND_LIMIT > 0
+            and _campaign_running()
+            and float(CAMPAIGN["spend"]) >= CAMPAIGN_SPEND_LIMIT
+        ):
+            logger.error(
+                f"⛔ Campaign spend ceiling hit (~${CAMPAIGN['spend']:.2f} ≥ "
+                f"${CAMPAIGN_SPEND_LIMIT:.2f}) — auto-stopping. Raise CAMPAIGN_SPEND_LIMIT "
+                f"to run further."
+            )
+            await _terminate_campaign()
     return JSONResponse({"status": "ok"})
 
 
@@ -569,22 +637,30 @@ async def campaign_start(region: str | None = None, limit: int | None = None):
     CAMPAIGN["started_at"] = datetime.datetime.now()
     CAMPAIGN["region"] = region
     CAMPAIGN["limit"] = limit
+    CAMPAIGN["spend"] = 0.0  # reset the per-campaign spend ceiling counter
     logger.info(f"Campaign started (pid {proc.pid}, region={region or 'all'}, limit={limit or 'none'})")
     return {"status": "started", "pid": proc.pid, "region": region, "limit": limit}
 
 
-@app.post("/campaign/stop")
-async def campaign_stop():
-    """Stop the running campaign. New calls stop; calls already placed finish."""
+async def _terminate_campaign() -> bool:
+    """Terminate the dialer subprocess if running. Returns True if it was running.
+    Already-placed calls on Pipecat Cloud finish; only new dialing stops."""
     proc = CAMPAIGN["proc"]
     if not _campaign_running():
-        return {"status": "not_running"}
-
+        return False
     proc.terminate()
     try:
         await asyncio.wait_for(proc.wait(), timeout=5)
     except TimeoutError:
         proc.kill()
+    return True
+
+
+@app.post("/campaign/stop")
+async def campaign_stop():
+    """Stop the running campaign. New calls stop; calls already placed finish."""
+    if not await _terminate_campaign():
+        return {"status": "not_running"}
     logger.info("Campaign stopped")
     return {"status": "stopped"}
 

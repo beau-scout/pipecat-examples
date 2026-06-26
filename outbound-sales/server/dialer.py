@@ -36,7 +36,9 @@ import datetime
 import os
 import time
 import uuid
+from collections import Counter
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import aiohttp
 from loguru import logger
@@ -54,6 +56,57 @@ CALL_TIMEOUT_SECS = 270
 # means the bot died without reporting, so the number becomes retry-eligible
 # again. Comfortably longer than a full call (MAX_CALL_SECONDS + dialer timeout).
 IN_PROGRESS_COOLDOWN_SECS = int(os.getenv("IN_PROGRESS_COOLDOWN_SECS", "900"))
+# Give up on a number after this many attempts that never reached a human, so a
+# dead line or a department voicemail isn't re-dialed forever. 0 disables the cap.
+MAX_ATTEMPTS = int(os.getenv("MAX_ATTEMPTS", "4"))
+
+# Only dial a lead when it is within business hours in ITS OWN local time, so we
+# don't call closed schools (every after-hours call still costs telephony + a bot
+# run to reach a voicemail). Window is local clock time, weekdays only. Set
+# CALL_WINDOW to "off" (or empty) to disable. Region (leads.csv col 3) is mapped
+# to a timezone by the US state named in it; unmapped regions are NOT restricted.
+CALL_WINDOW = os.getenv("CALL_WINDOW", "08:30-15:30")
+_STATE_TZ = {
+    "arizona": "America/Phoenix",  # no DST
+    "nevada": "America/Los_Angeles",
+    "california": "America/Los_Angeles",
+    "utah": "America/Denver",
+    "texas": "America/Chicago",
+    "colorado": "America/Denver",
+    "new mexico": "America/Denver",
+    "oregon": "America/Los_Angeles",
+    "washington": "America/Los_Angeles",
+    "idaho": "America/Boise",
+}
+
+
+def _region_tz(region: str) -> ZoneInfo | None:
+    r = (region or "").lower()
+    for state, tz in _STATE_TZ.items():
+        if state in r:
+            return ZoneInfo(tz)
+    return None
+
+
+def _within_call_window(region: str, now_utc: datetime.datetime) -> bool:
+    """True if it's a weekday and within CALL_WINDOW in the lead's local time.
+    Unknown region or disabled window → True (don't block what we can't place)."""
+    if not CALL_WINDOW or CALL_WINDOW.lower() == "off" or "-" not in CALL_WINDOW:
+        return True
+    tz = _region_tz(region)
+    if tz is None:
+        return True
+    local = now_utc.astimezone(tz)
+    if local.weekday() >= 5:  # Saturday/Sunday
+        return False
+    try:
+        start_s, end_s = CALL_WINDOW.split("-")
+        sh, sm = (int(x) for x in start_s.split(":"))
+        eh, em = (int(x) for x in end_s.split(":"))
+    except ValueError:
+        return True
+    minutes = local.hour * 60 + local.minute
+    return sh * 60 + sm <= minutes <= eh * 60 + em
 
 
 def read_leads(path: Path) -> list[dict]:
@@ -192,9 +245,20 @@ async def main():
         }
         attempted_phones = {row["lead_phone"] for row in results.values()}
 
+        # Count real attempts per number (in_progress placeholders don't count) so
+        # we can give up after MAX_ATTEMPTS — a dead line or a department voicemail
+        # otherwise gets re-dialed forever.
+        attempt_counts = Counter(
+            row["lead_phone"] for row in results.values() if row.get("outcome") != "in_progress"
+        )
+        exhausted_phones = (
+            {p for p, c in attempt_counts.items() if c >= MAX_ATTEMPTS} if MAX_ATTEMPTS > 0 else set()
+        )
+
         # Schools that announced a seasonal closure are paused until retry_after
         # (set by the server, default 30 days out). Skip them until then.
         now = datetime.datetime.now()
+        now_utc = datetime.datetime.now(datetime.timezone.utc)
         now_iso = now.isoformat()
         paused_phones = {
             row["lead_phone"]
@@ -235,21 +299,39 @@ async def main():
             and lead["phone"] not in done_phones
             and lead["phone"] not in paused_phones
             and lead["phone"] not in in_flight_phones
+            and lead["phone"] not in exhausted_phones
         ]
         todo = never_called + retry
+
+        # Business-hours guard: hold leads whose local time is outside the call
+        # window. Done AFTER building todo so the counts below reflect what's
+        # actually dialable right now; out-of-window leads come back on a later run.
+        off_hours = [lead for lead in todo if not _within_call_window(lead.get("region", ""), now_utc)]
+        if off_hours:
+            off_ids = {id(lead) for lead in off_hours}
+            todo = [lead for lead in todo if id(lead) not in off_ids]
+
         if args.limit:
             todo = todo[: args.limit]
 
         done_count = sum(1 for lead in leads if lead["phone"] in done_phones)
         paused_count = sum(1 for lead in leads if lead["phone"] in paused_phones)
         in_flight_count = sum(1 for lead in leads if lead["phone"] in in_flight_phones)
+        exhausted_count = sum(1 for lead in leads if lead["phone"] in exhausted_phones)
         logger.info(
             f"{len(leads)} lead(s): {len(never_called)} not yet called, "
             f"{len(retry)} non-contact(s) to retry, {done_count} already reached a human, "
-            f"{paused_count} paused (seasonal closure), {in_flight_count} in progress (skipped)"
+            f"{paused_count} paused (seasonal closure), {in_flight_count} in progress (skipped), "
+            f"{exhausted_count} gave up after {MAX_ATTEMPTS} tries, {len(off_hours)} held (outside call window)"
         )
         if not todo:
-            logger.info("Nothing to do — every number has already reached a human.")
+            if off_hours:
+                logger.info(
+                    f"Nothing dialable right now — {len(off_hours)} lead(s) are outside their local "
+                    f"call window ({CALL_WINDOW}). Re-run during business hours, or set CALL_WINDOW=off."
+                )
+            else:
+                logger.info("Nothing to do — every number has already reached a human.")
             return
 
         for i in range(0, len(todo), batch_size):

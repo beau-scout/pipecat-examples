@@ -41,6 +41,7 @@ from pipecat.audio.turn.smart_turn.base_smart_turn import SmartTurnParams
 from pipecat.audio.turn.smart_turn.local_smart_turn_v3 import LocalSmartTurnAnalyzerV3
 from pipecat.audio.vad.silero import SileroVADAnalyzer
 from pipecat.extensions.ivr.ivr_navigator import IVRNavigator, IVRStatus
+from pipecat.audio.vad.vad_analyzer import VADParams
 from pipecat.frames.frames import (
     EndWorkerFrame,
     Frame,
@@ -50,6 +51,7 @@ from pipecat.frames.frames import (
     MetricsFrame,
     TranscriptionFrame,
     TTSSpeakFrame,
+    VADParamsUpdateFrame,
 )
 from pipecat.metrics.metrics import LLMUsageMetricsData
 from pipecat.observers.user_bot_latency_observer import UserBotLatencyObserver
@@ -92,13 +94,26 @@ MAIN_CALLBACK_NUMBER = os.getenv("MAIN_CALLBACK_NUMBER", "210-594-2600")
 # unbounded — exactly the kind of runaway that can rack up API spend. These cap
 # every call: it's force-ended once it exceeds either limit. Tune via env.
 MAX_CALL_SECONDS = int(os.getenv("MAX_CALL_SECONDS", "240"))  # absolute per-call cap
-MAX_LLM_TURNS = int(os.getenv("MAX_LLM_TURNS", "40"))  # max LLM completions per call
+# A healthy call is ~10-16 conversational completions (greet, intro, collect 4-5
+# fields, read back, save, close). These are tightened from 40/60: a real call
+# rarely needs more, and a lower ceiling means a stuck/looping call is force-ended
+# after far less waste. Tune via env if legitimate long calls get cut.
+MAX_LLM_TURNS = int(os.getenv("MAX_LLM_TURNS", "25"))  # max conversational LLM completions
 # Hard backstop on TOTAL LLM completions in any mode. The IVRNavigator makes its
 # own completions (classifier + navigation) that bypass TurnLimiter, so a
 # misclassified looping menu can churn calls TurnLimiter never sees. UsageTracker
 # counts every completion via MetricsFrames and force-ends past this. Set above
-# MAX_LLM_TURNS so the conversational guard fires first on normal calls.
-MAX_LLM_CALLS = int(os.getenv("MAX_LLM_CALLS", "60"))
+# MAX_LLM_TURNS (navigation adds completions on top of the conversation budget).
+MAX_LLM_CALLS = int(os.getenv("MAX_LLM_CALLS", "35"))
+# After an IVR transfer (COMPLETED) we stage Hailey but don't run her until the
+# next turn-end. If the greeting/voicemail already finished and nothing fires her,
+# she'd sit silent until the watchdog. This is how long to wait before forcing her
+# to speak (e.g. to leave a voicemail message) so a transfer can't silently stall.
+VOICEMAIL_FALLBACK_SECS = float(os.getenv("VOICEMAIL_FALLBACK_SECS", "6"))
+# VAD silence threshold for the live conversation. IVR navigation raises it to
+# 2.0s; on hand-off to a human we restore a snappier value so Hailey isn't
+# sluggish for the rest of the call.
+CONVERSATION_VAD_STOP_SECS = float(os.getenv("CONVERSATION_VAD_STOP_SECS", "0.8"))
 
 
 class DialoutManager:
@@ -586,13 +601,15 @@ async def run_bot(
             max_tokens=int(os.getenv("ANTHROPIC_MAX_TOKENS", "512")),
         ),
     )
-    # Surface the active model + caching up front so a deploy's real config is
-    # visible in the logs. Prompt caching needs a cacheable prefix above the
-    # provider minimum (~1024 tok for Sonnet/Opus, ~2048 for Haiku); our system
-    # prompt + tools clear both, so caching engages from the 2nd turn of any
-    # multi-turn call. If the logs show a different model than expected (e.g.
-    # Haiku), the deployment is overriding ANTHROPIC_MODEL.
-    logger.info(f"Call {call_id}: LLM model={anthropic_model}, prompt_caching=on")
+    # Surface the active model so a deploy's real config is visible in the logs
+    # (the "all usage is Haiku" confusion was an old image, not a secret). Whether
+    # caching actually ENGAGED is NOT asserted here — that's only knowable from the
+    # real cache_read tokens, which the per-call summary logs at call end. Anthropic
+    # only caches a prefix at/above a minimum size (it varies by model; do not rely
+    # on a hardcoded number) so treat the logged cache_read %, not this line, as the
+    # source of truth. If the model below isn't what you expect, ANTHROPIC_MODEL is
+    # overriding it in the deployment.
+    logger.info(f"Call {call_id}: LLM model={anthropic_model} (prompt_caching requested)")
 
     # IVR navigator: detects whether we reached an automated phone menu or a live
     # human. For a menu it actively navigates with DTMF (this is what makes the
@@ -784,6 +801,29 @@ async def run_bot(
     # navigator fires both on_conversation_detected and a COMPLETED status.
     handoff_state = {"done": False}
 
+    async def voicemail_fallback(ivr_processor, messages, completions_at_handoff):
+        """After a COMPLETED transfer we stage Hailey silently (run_llm=False) so
+        she doesn't talk over an in-progress greeting. But if the greeting/voicemail
+        already finished and no turn-end fires her, she'd sit silent until the
+        watchdog — the exact silent-stall the COMPLETED handling exists to prevent.
+        If no completion has happened after the fallback window, force her to speak
+        (she'll leave a voicemail message or greet a waiting human)."""
+        try:
+            await asyncio.sleep(VOICEMAIL_FALLBACK_SECS)
+        except asyncio.CancelledError:
+            return
+        if result.ending or result.end_reason:
+            return
+        # A completion since hand-off means a turn already fired her (a human spoke
+        # or the voicemail greeting transcribed) — nothing to rescue.
+        if usage_totals["llm_calls"] > completions_at_handoff:
+            return
+        logger.info(f"Call {call_id}: transfer went quiet — prompting Hailey to speak")
+        await ivr_processor.push_frame(
+            LLMMessagesUpdateFrame(messages=messages, run_llm=True),
+            FrameDirection.UPSTREAM,
+        )
+
     async def hand_off_to_hailey(ivr_processor, conversation_history, *, run_llm: bool):
         """Switch the LLM from IVR-navigation mode to Hailey's conversation: load
         her system prompt plus everything heard so far. With run_llm=True she
@@ -796,10 +836,22 @@ async def run_bot(
             return
         handoff_state["done"] = True
         messages = [{"role": "developer", "content": system_prompt(lead)}, *conversation_history]
+        # Restore conversational turn-taking: navigation raised VAD silence to
+        # 2.0s; a live human conversation should use the snappier value so Hailey
+        # isn't sluggish for the rest of the call.
+        await ivr_processor.push_frame(
+            VADParamsUpdateFrame(params=VADParams(stop_secs=CONVERSATION_VAD_STOP_SECS)),
+            FrameDirection.UPSTREAM,
+        )
         await ivr_processor.push_frame(
             LLMMessagesUpdateFrame(messages=messages, run_llm=run_llm),
             FrameDirection.UPSTREAM,
         )
+        if not run_llm:
+            # COMPLETED transfer: arm the silent-stall rescue (see voicemail_fallback).
+            asyncio.create_task(
+                voicemail_fallback(ivr_processor, messages, usage_totals["llm_calls"])
+            )
 
     @ivr_navigator.event_handler("on_conversation_detected")
     async def on_conversation_detected(ivr_processor, conversation_history):
