@@ -415,6 +415,36 @@ KEY DISTINCTIONS:
 RESPOND ONLY with `<mode>ivr</mode>` or `<mode>conversation</mode>`."""
 
 
+def ivr_goal_for(lead: Lead) -> str:
+    """The navigation goal handed to the IVRNavigator for a real dial-out call.
+    Module-level (not inlined in run_bot) so it can be imported and tested."""
+    return (
+        f"You are calling {lead.company or 'a school'} on behalf of RunScout, and you "
+        "need to reach a LIVE PERSON. Navigate the phone menu to the front office, "
+        "main office, reception, or operator — whatever option connects you to a real "
+        "person who can help or transfer you. Prefer options worded like 'front "
+        "office', 'main office', 'operator', 'reception', 'to speak with someone', or "
+        "'all other matters'. NEVER choose attendance, absence reporting, the "
+        "registrar, counseling, fees or payments, special education, food services, or "
+        "a staff directory. "
+        # Long school menus repeat and then hang up — don't wait through the whole
+        # list. The Edith Bowen call waited through the menu twice and got cut off.
+        "Act PROMPTLY: the moment you hear an option that reaches a person (front "
+        "office, main office, operator, secretary, '0'), press it immediately — do "
+        "NOT wait to hear the rest of the menu, because these menus loop and then "
+        "disconnect. "
+        # Voicemail after navigation: the navigator was emitting <ivr>wait</ivr> at a
+        # department voicemail and the call ended with no message left. Emitting
+        # <ivr>completed</ivr> hands off to Hailey, who leaves a callback message.
+        "If pressing an option lands you on a voicemail or answering machine "
+        "(phrases like 'leave a message', 'after the tone', 'I'm away from my desk', "
+        "'is not available', 'press pound when finished'), do NOT keep waiting — "
+        "respond with <ivr>completed</ivr> so we can leave a brief callback message. "
+        "If the only path is a recorded directory with no way to reach a person and "
+        "no voicemail to leave a message on, respond with <ivr>stuck</ivr>."
+    )
+
+
 def system_prompt(lead: Lead) -> str:
     if lead.company:
         place_line = f"You are calling {lead.company}."
@@ -570,32 +600,7 @@ async def run_bot(
     # because turn-taking treats a recording as "never finished"). When a human
     # is reached it fires on_conversation_detected and we hand off to Hailey's
     # normal conversation (below).
-    ivr_goal = (
-        f"You are calling {lead.company or 'a school'} on behalf of RunScout, and you "
-        "need to reach a LIVE PERSON. Navigate the phone menu to the front office, "
-        "main office, reception, or operator — whatever option connects you to a real "
-        "person who can help or transfer you. Prefer options worded like 'front "
-        "office', 'main office', 'operator', 'reception', 'to speak with someone', or "
-        "'all other matters'. NEVER choose attendance, absence reporting, the "
-        "registrar, counseling, fees or payments, special education, food services, or "
-        "a staff directory. "
-        # Long school menus repeat and then hang up — don't wait through the whole
-        # list. The Edith Bowen call waited through the menu twice and got cut off.
-        "Act PROMPTLY: the moment you hear an option that reaches a person (front "
-        "office, main office, operator, secretary, '0'), press it immediately — do "
-        "NOT wait to hear the rest of the menu, because these menus loop and then "
-        "disconnect. "
-        # Voicemail after navigation: the navigator was emitting <ivr>wait</ivr> at a
-        # department voicemail and the call ended with no message left. Emitting
-        # <ivr>completed</ivr> hands off to Hailey, who leaves a callback message.
-        "If pressing an option lands you on a voicemail or answering machine "
-        "(phrases like 'leave a message', 'after the tone', 'I'm away from my desk', "
-        "'is not available', 'press pound when finished'), do NOT keep waiting — "
-        "respond with <ivr>completed</ivr> so we can leave a brief callback message. "
-        "If the only path is a recorded directory with no way to reach a person and "
-        "no voicemail to leave a message on, respond with <ivr>stuck</ivr>."
-    )
-    ivr_navigator = SchoolIVRNavigator(llm=llm, ivr_prompt=ivr_goal)
+    ivr_navigator = SchoolIVRNavigator(llm=llm, ivr_prompt=ivr_goal_for(lead))
 
     async def save_contact_info(
         params: FunctionCallParams,
