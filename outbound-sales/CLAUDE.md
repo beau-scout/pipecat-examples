@@ -26,6 +26,20 @@ uv run bot.py -t eval                                      # then: PYTHONPATH=. 
 
 The bot exits when Hailey hangs up, so restart `bot.py -t eval` between single-scenario runs.
 
+**Simulation eval harness** — 100-agent LLM simulation (50 receptionist × 50 IVR navigation) that tests Hailey's actual prompts without telephony. Run after any prompt change in bot.py:
+
+```bash
+# 1. Refresh the prompt snapshots the simulation reads:
+PYTHONPATH=. uv run python evals/make_prompts.py
+
+# 2. Run the simulation inside Claude Code (Workflow tool):
+#    Workflow({ scriptPath: "outbound-sales/server/evals/simulate.js" })
+#    Or with a custom prompts path if the repo is not at /home/user/pipecat-examples:
+#    Workflow({ scriptPath: "...", args: { promptsDir: "/abs/path/evals/prompts" } })
+```
+
+The simulation spawns independent judge agents for each call; `pass` requires the correct outcome AND no medium+ behavioral failure. Results come back as `{ receptionist: { aggregate, failures }, ivr: { aggregate, failures } }`. Fix any failures, re-run `make_prompts.py`, and rerun until 0 failures.
+
 Real calls (local bot): two terminals — `uv run server.py` (port 7867) and `uv run bot.py -t daily` (port 7860), plus a purchased Daily phone number and dial-out enablement.
 
 Control panel: with `server.py` running, open `http://localhost:7867/` to start/stop a batch campaign and watch live stats. `start.command` (double-click on macOS) does the venv setup, starts the server, and opens the page. In production the bot runs on Pipecat Cloud, so `bot.py` is not run locally; only `server.py` (control panel + webhook) runs on the operator's machine, and `SERVER_URL` must be reachable by the cloud bots.
