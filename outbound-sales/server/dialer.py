@@ -124,10 +124,17 @@ async def run_batch(session: aiohttp.ClientSession, server_url: str, batch: list
         await asyncio.sleep(POLL_INTERVAL_SECS)
         rows = await fetch_results(session, server_url)
         for call_id in list(pending):
-            if call_id in rows:
+            row = rows.get(call_id)
+            # A call is only DONE when it has a terminal outcome. The server
+            # writes a provisional "in_progress" row at dial time (so restarts
+            # don't re-dial in-flight calls); that row is NOT a completion, so we
+            # must keep waiting on it — otherwise the batch loop sees every call
+            # "finish" instantly and fires the next batch with no pacing, blasting
+            # the whole list at once.
+            if row is not None and row.get("outcome") != "in_progress":
                 lead = pending.pop(call_id)
                 school = lead.get("school") or lead.get("company") or lead["phone"]
-                logger.info(f"   ↳ {school}: {rows[call_id]['outcome']}")
+                logger.info(f"   ↳ {school}: {row['outcome']}")
 
     # Anything still pending gets a timeout row. The bot may still report its
     # own row later; the server keeps the first row per call_id.
