@@ -583,15 +583,30 @@ async def run_bot(
             ),
         )
 
-    # LLM service (Claude). Default to Sonnet 4.6; override with ANTHROPIC_MODEL
-    # (e.g. claude-haiku-4-5 for the lowest phone-call latency/cost). Thinking is
-    # left off by default — extended thinking would add seconds of dead air.
+    # LLM service (Claude). Default to Sonnet 4.6. Thinking is left off by default
+    # — extended thinking would add seconds of dead air on a live phone call.
     #
     # Cost: the large static system prompt + tool schemas are the bulk of every
     # turn's input. enable_prompt_caching marks them cacheable so repeated turns
     # within a call re-read them at ~10% cost instead of full price — the single
-    # biggest lever on per-call spend. max_tokens caps the (short, spoken) reply
-    # so a turn can't run away generating output.
+    # biggest lever on per-call spend. Pipecat's Anthropic adapter implements this
+    # by putting a `cache_control: ephemeral` breakpoint on the last two user
+    # messages; the Anthropic API then caches the ENTIRE prefix before each
+    # breakpoint (tools + system + earlier turns), so the static system prompt is
+    # cached even though it carries no marker of its own. max_tokens caps the
+    # (short, spoken) reply so a turn can't run away generating output.
+    #
+    # CACHING THRESHOLD — this constrains the model choice. Anthropic only caches a
+    # prefix at/above a per-model minimum: 2048 tokens for Sonnet 4.6, but 4096 for
+    # Haiku 4.5 and every Opus tier. Our static prefix (system prompt ~2.2k tokens +
+    # the two tool schemas) is ~2.6k tokens — it clears Sonnet 4.6's 2048 floor (so
+    # caching engages, matching the 53–100% cache_read seen in production) but is
+    # BELOW the 4096 floor of Haiku/Opus. So setting ANTHROPIC_MODEL to claude-haiku-4-5
+    # or any Opus would SILENTLY disable caching for this prompt (no error — every turn
+    # just re-pays full price for the system prompt). Sonnet 4.6 is the default
+    # precisely because it's the cheapest tier whose floor this prompt clears; only
+    # move off it if you've grown the static prefix past 4096 tokens or measured the
+    # cache_read % staying healthy on the new model.
     # NOTE: system_instruction is intentionally NOT set here. The Anthropic
     # adapter gives a service-level system_instruction absolute priority over
     # any system message in the context (base_llm_adapter._resolve_system_
