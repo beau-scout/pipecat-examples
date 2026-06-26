@@ -456,7 +456,14 @@ def ivr_goal_for(lead: Lead) -> str:
         "'is not available', 'press pound when finished'), do NOT keep waiting — "
         "respond with <ivr>completed</ivr> so we can leave a brief callback message. "
         "If the only path is a recorded directory with no way to reach a person and "
-        "no voicemail to leave a message on, respond with <ivr>stuck</ivr>."
+        "no voicemail to leave a message on, respond with <ivr>stuck</ivr>. "
+        # A closed-office recording with no menu and no mailbox hangs up on you; the
+        # closed_recording sims emitted <ivr>wait</ivr> and got disconnected instead
+        # of recognizing the dead end. Catch it before the line drops.
+        "If the recording just says the office is closed / to call back during "
+        "business hours and presents NO menu options and NO way to leave a message, "
+        "that is a dead end — respond with <ivr>stuck</ivr> immediately rather than "
+        "waiting (the line will hang up on you)."
     )
 
 
@@ -493,7 +500,7 @@ Follow this flow — one question at a time, nothing extra:
 5. Read the email back to confirm — spoken naturally, never the raw address. Replace "@" with "at" and "." with "dot", pause between chunks. Example: "dana.smith@lincoln.k12.ca.us" → "dana dot smith, at lincoln dot k twelve, dot c a, dot u s — did I get that right?" Pass the real email address to save_contact_info, not the spoken version.
 6. Ask for a good time for one of our founders to call. One ask — no follow-up.
 7. CALL save_contact_info NOW, before you say goodbye, with everything you collected: name, role, phone, extension, email, and best time. This is REQUIRED — the contact is lost unless you call it. Do not skip it, and do not say the closing line until you have called it. (Pass the real phone number and email, not the spoken-out versions.) Don't narrate the saving — no "let me jot that down" / "let me save that"; just call the tool quietly. A brief warm acknowledgment of the time ("Perfect, got it") is fine.
-8. Then end cleanly with exactly: "Thank you for your help, I really appreciate it. Have a wonderful day!" and immediately call end_call. No recap, no "is there anything else."
+8. Then end cleanly with exactly: "Thank you for your help, I really appreciate it. Have a wonderful day!" and immediately call end_call with reason "contact_captured" (you reached a live person and got their details — never use "voicemail", "refused", or "no_answer" here). No recap, no "is there anything else."
 
 Critical rule on follow-ups: after each question, wait for the answer. Do NOT add a second question or a clarifying phrase in the same turn. One question. Stop. Wait.
 
