@@ -19,6 +19,7 @@ to ensure consistency between local and cloud deployments.
 import asyncio
 import csv
 import datetime
+import html
 import json
 import os
 import sys
@@ -31,7 +32,7 @@ import aiohttp
 import uvicorn
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from loguru import logger
 
 from apollo_utils import enroll_security_contact
@@ -271,6 +272,25 @@ async def handle_dial_out_request(request: Request) -> JSONResponse:
         raise HTTPException(status_code=500, detail=f"Failed to start bot: {str(e)}")
     logger.info(f"📞 {who}: bot started, call ringing")
 
+    # Record a provisional "in_progress" row immediately, so this number counts
+    # as attempted the instant the bot starts — not only when it reports an
+    # outcome at call end. Without this, stopping and restarting a campaign
+    # mid-call re-dials every in-flight number (the resume logic still sees it as
+    # "never called"), double-dialing the same school. The bot's terminal outcome
+    # overwrites this row when the call ends (see handle_call_result); an
+    # in_progress row that never resolves (bot crashed) becomes retry-eligible
+    # again after a cooldown in the dialer.
+    if call_id not in CALL_RESULTS:
+        CALL_RESULTS[call_id] = {
+            "call_id": call_id,
+            "lead_phone": lead.phone,
+            "lead_name": lead.name or "",
+            "lead_company": lead.company or "",
+            "outcome": "in_progress",
+            "timestamp": datetime.datetime.now().isoformat(timespec="seconds"),
+        }
+        _save_results()
+
     return JSONResponse(
         {
             "status": "success",
@@ -298,7 +318,12 @@ async def handle_call_result(request: Request) -> JSONResponse:
     if not call_id:
         raise HTTPException(status_code=400, detail="Missing 'call_id'")
     row = {"timestamp": datetime.datetime.now().isoformat(timespec="seconds"), **row}
-    if call_id in CALL_RESULTS:
+    existing = CALL_RESULTS.get(call_id)
+    # First TERMINAL outcome per call_id wins (so a dialer timeout stands even if
+    # a slow bot reports later). But a provisional "in_progress" row, written at
+    # dial time so restarts don't re-dial in-flight calls, is always replaced by
+    # the real outcome.
+    if existing is not None and existing.get("outcome") != "in_progress":
         logger.debug(f"Ignoring duplicate result for call {call_id}: {row}")
     else:
         # Pause schools that announced an extended seasonal closure for 30 days.
@@ -331,20 +356,15 @@ async def handle_call_result(request: Request) -> JSONResponse:
                 f"  ·  {u.get('llm_calls', 0)} calls, "
                 f"in {total_in} tok ({pct}% cached), out {u.get('completion_tokens', 0)} tok"
             )
-        logger.info(f"✓ {who}: {row.get('outcome')}{detail}{cost}")
-        # Print the full transcript to the terminal for live debugging.
+        # One concise line per call. The full transcript is NOT dumped here — it
+        # made the terminal unreadable across a batch. Read transcripts on the
+        # /transcripts page (all calls, one scrollable view) or the control panel.
         try:
             turns = json.loads(row.get("transcript") or "[]")
         except (json.JSONDecodeError, TypeError):
             turns = []
-        if turns:
-            lines = "\n".join(
-                f"      {'Hailey' if t.get('role') == 'assistant' else 'Caller':6}  {t.get('text', '')}"
-                for t in turns
-            )
-            logger.info(f"  transcript [{call_id[:8]}]:\n{lines}")
-        else:
-            logger.info(f"  transcript [{call_id[:8]}]: (none — bot never spoke)")
+        turn_note = f"  ·  {len(turns)} turns" if turns else "  ·  (bot never spoke)"
+        logger.info(f"✓ {who}: {row.get('outcome')}{detail}{cost}{turn_note}")
         # On a captured contact, push it to Apollo so the team can follow up.
         # Best effort: enroll_security_contact never raises.
         await enroll_security_contact(row)
@@ -364,6 +384,130 @@ async def get_call(call_id: str):
 async def get_results() -> dict[str, dict[str, str]]:
     """Return all recorded call results keyed by call_id. Polled by dialer.py."""
     return CALL_RESULTS
+
+
+# Outcome → colored badge, so the transcripts page is scannable at a glance.
+_OUTCOME_COLORS = {
+    "contact_captured": "#16a34a",
+    "voicemail": "#0891b2",
+    "closed_for_summer": "#7c3aed",
+    "refused": "#dc2626",
+    "wrong_number": "#dc2626",
+    "no_answer": "#6b7280",
+    "hung_up": "#d97706",
+    "timeout": "#d97706",
+    "max_turns": "#d97706",
+    "error": "#dc2626",
+    "in_progress": "#2563eb",
+}
+
+
+@app.get("/transcripts", response_class=HTMLResponse)
+async def transcripts_page():
+    """One scrollable page with every call's transcript, newest first — the
+    readable alternative to scrolling the server's terminal log. Each call is a
+    card: school, outcome badge, token/cost summary, then the Hailey/Caller turns.
+    """
+    rows = sorted(
+        CALL_RESULTS.values(),
+        key=lambda r: r.get("timestamp", ""),
+        reverse=True,
+    )
+
+    def esc(s) -> str:
+        return html.escape(str(s or ""))
+
+    cards = []
+    for row in rows:
+        outcome = row.get("outcome", "unknown")
+        color = _OUTCOME_COLORS.get(outcome, "#6b7280")
+        school = row.get("lead_company") or row.get("lead_phone") or "unknown"
+        when = row.get("timestamp", "")
+        notes = row.get("notes", "")
+
+        # Token/cost summary, if present.
+        cost = ""
+        try:
+            u = json.loads(row.get("usage") or "{}")
+        except (json.JSONDecodeError, TypeError):
+            u = {}
+        if u:
+            cached = u.get("cache_read_tokens", 0)
+            total_in = u.get("prompt_tokens", 0) + cached + u.get("cache_creation_tokens", 0)
+            pct = round(100 * cached / total_in) if total_in else 0
+            cost = (
+                f"{u.get('llm_calls', 0)} LLM calls · in {total_in} tok "
+                f"({pct}% cached) · out {u.get('completion_tokens', 0)} tok"
+            )
+
+        try:
+            turns = json.loads(row.get("transcript") or "[]")
+        except (json.JSONDecodeError, TypeError):
+            turns = []
+        if turns:
+            lines = "".join(
+                f'<div class="turn {"bot" if t.get("role") == "assistant" else "caller"}">'
+                f'<span class="who">{"Hailey" if t.get("role") == "assistant" else "Caller"}</span>'
+                f'<span class="text">{esc(t.get("text", ""))}</span></div>'
+                for t in turns
+            )
+            body = f'<div class="transcript">{lines}</div>'
+        elif outcome == "in_progress":
+            body = '<div class="empty">Call in progress…</div>'
+        else:
+            body = '<div class="empty">No transcript — the bot never spoke (no answer / instant hangup).</div>'
+
+        cards.append(
+            f'<div class="card">'
+            f'<div class="head">'
+            f'<span class="school">{esc(school)}</span>'
+            f'<span class="badge" style="background:{color}">{esc(outcome)}</span>'
+            f'<span class="when">{esc(when)}</span>'
+            f"</div>"
+            f'{f"<div class=notes>{esc(notes)}</div>" if notes else ""}'
+            f'{f"<div class=cost>{esc(cost)}</div>" if cost else ""}'
+            f"{body}"
+            f"</div>"
+        )
+
+    page = f"""<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Call transcripts ({len(rows)})</title>
+<style>
+  :root {{ --bg:#0f172a; --card:#1e293b; --muted:#94a3b8; --text:#e2e8f0; --line:#334155; }}
+  * {{ box-sizing:border-box; }}
+  body {{ margin:0; background:var(--bg); color:var(--text); font:15px/1.5 -apple-system,Segoe UI,Roboto,sans-serif; }}
+  header {{ position:sticky; top:0; background:var(--bg); border-bottom:1px solid var(--line); padding:16px 24px; display:flex; gap:16px; align-items:baseline; z-index:1; }}
+  header h1 {{ font-size:18px; margin:0; }}
+  header a {{ color:var(--muted); text-decoration:none; font-size:14px; }}
+  header .count {{ color:var(--muted); font-size:14px; }}
+  main {{ max-width:900px; margin:0 auto; padding:24px; display:flex; flex-direction:column; gap:16px; }}
+  .card {{ background:var(--card); border:1px solid var(--line); border-radius:10px; padding:16px; }}
+  .head {{ display:flex; gap:12px; align-items:center; flex-wrap:wrap; }}
+  .school {{ font-weight:600; font-size:16px; }}
+  .badge {{ color:#fff; font-size:12px; font-weight:600; padding:2px 8px; border-radius:999px; }}
+  .when {{ color:var(--muted); font-size:13px; margin-left:auto; }}
+  .notes {{ color:#fbbf24; font-size:13px; margin-top:8px; }}
+  .cost {{ color:var(--muted); font-size:12px; margin-top:6px; font-variant-numeric:tabular-nums; }}
+  .transcript {{ margin-top:12px; border-top:1px solid var(--line); padding-top:12px; display:flex; flex-direction:column; gap:6px; }}
+  .turn {{ display:flex; gap:10px; }}
+  .turn .who {{ flex:0 0 56px; font-weight:600; font-size:12px; text-transform:uppercase; letter-spacing:.03em; padding-top:1px; }}
+  .turn.bot .who {{ color:#38bdf8; }}
+  .turn.caller .who {{ color:#a3a3a3; }}
+  .turn .text {{ flex:1; white-space:pre-wrap; }}
+  .empty {{ color:var(--muted); font-style:italic; margin-top:10px; font-size:14px; }}
+</style></head>
+<body>
+  <header>
+    <h1>Call transcripts</h1>
+    <span class="count">{len(rows)} call(s)</span>
+    <a href="/">← control panel</a>
+  </header>
+  <main>
+    {"".join(cards) if cards else '<div class="empty">No calls recorded yet.</div>'}
+  </main>
+</body></html>"""
+    return HTMLResponse(page)
 
 
 @app.get("/health")

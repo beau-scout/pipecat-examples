@@ -33,6 +33,7 @@ import argparse
 import asyncio
 import csv
 import datetime
+import os
 import time
 import uuid
 from pathlib import Path
@@ -40,12 +41,19 @@ from pathlib import Path
 import aiohttp
 from loguru import logger
 
-BATCH_SIZE = 5
+# How many calls to place at once per batch. Configurable via env or --batch-size.
+BATCH_SIZE = int(os.getenv("DIALER_BATCH_SIZE", "5"))
 POLL_INTERVAL_SECS = 5
 # Lowered from 360 to bound how long the dialer waits on a stuck call. The bot
 # itself force-ends a call at MAX_CALL_SECONDS (default 240), so this is a hair
 # longer to let the bot's own outcome land first, then it's a hard backstop.
 CALL_TIMEOUT_SECS = 270
+# A call shows as "in_progress" from the moment its bot starts until it reports
+# an outcome. While it's in this window we must NOT re-dial it (that's the
+# stop/restart double-dial bug). After this cooldown a still-"in_progress" row
+# means the bot died without reporting, so the number becomes retry-eligible
+# again. Comfortably longer than a full call (MAX_CALL_SECONDS + dialer timeout).
+IN_PROGRESS_COOLDOWN_SECS = int(os.getenv("IN_PROGRESS_COOLDOWN_SECS", "900"))
 
 
 def read_leads(path: Path) -> list[dict]:
@@ -144,7 +152,14 @@ async def main():
     parser.add_argument("--server", default="http://localhost:7867", help="server.py base URL")
     parser.add_argument("--region", default=None, help="Only call leads whose region matches")
     parser.add_argument("--limit", type=int, default=None, help="Cap the number of new calls this run")
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=BATCH_SIZE,
+        help=f"How many calls to place at once (default {BATCH_SIZE}, or $DIALER_BATCH_SIZE)",
+    )
     args = parser.parse_args()
+    batch_size = max(1, args.batch_size)
 
     leads = read_leads(Path(args.leads))
     if args.region:
@@ -172,24 +187,47 @@ async def main():
 
         # Schools that announced a seasonal closure are paused until retry_after
         # (set by the server, default 30 days out). Skip them until then.
-        now_iso = datetime.datetime.now().isoformat()
+        now = datetime.datetime.now()
+        now_iso = now.isoformat()
         paused_phones = {
             row["lead_phone"]
             for row in results.values()
             if row.get("retry_after", "") > now_iso
         }
 
+        # Calls still "in_progress" (bot started, no outcome yet) within the
+        # cooldown are live right now — do NOT re-dial them. This is what makes
+        # stop/restart safe: a number dialed seconds ago stays held until it
+        # either reports an outcome or the cooldown lapses (bot died → retry).
+        in_flight_phones = set()
+        for row in results.values():
+            if row.get("outcome") != "in_progress":
+                continue
+            ts = row.get("timestamp", "")
+            try:
+                age = (now - datetime.datetime.fromisoformat(ts)).total_seconds()
+            except (ValueError, TypeError):
+                age = 0  # no/garbled timestamp → treat as just-started, hold it
+            if age < IN_PROGRESS_COOLDOWN_SECS:
+                in_flight_phones.add(row["lead_phone"])
+
         # Call everyone once FIRST, then restart the list over the non-contacts.
         # Ordering never-called leads ahead of retries guarantees the whole list
         # is covered before any number is dialed a second time. Paused (seasonal
         # closure) numbers are held out until their retry_after passes.
-        never_called = [lead for lead in leads if lead["phone"] not in attempted_phones]
+        never_called = [
+            lead
+            for lead in leads
+            if lead["phone"] not in attempted_phones
+            and lead["phone"] not in in_flight_phones
+        ]
         retry = [
             lead
             for lead in leads
             if lead["phone"] in attempted_phones
             and lead["phone"] not in done_phones
             and lead["phone"] not in paused_phones
+            and lead["phone"] not in in_flight_phones
         ]
         todo = never_called + retry
         if args.limit:
@@ -197,18 +235,19 @@ async def main():
 
         done_count = sum(1 for lead in leads if lead["phone"] in done_phones)
         paused_count = sum(1 for lead in leads if lead["phone"] in paused_phones)
+        in_flight_count = sum(1 for lead in leads if lead["phone"] in in_flight_phones)
         logger.info(
             f"{len(leads)} lead(s): {len(never_called)} not yet called, "
             f"{len(retry)} non-contact(s) to retry, {done_count} already reached a human, "
-            f"{paused_count} paused (seasonal closure)"
+            f"{paused_count} paused (seasonal closure), {in_flight_count} in progress (skipped)"
         )
         if not todo:
             logger.info("Nothing to do — every number has already reached a human.")
             return
 
-        for i in range(0, len(todo), BATCH_SIZE):
-            batch = todo[i : i + BATCH_SIZE]
-            logger.info(f"--- Batch {i // BATCH_SIZE + 1}: {len(batch)} call(s) ---")
+        for i in range(0, len(todo), batch_size):
+            batch = todo[i : i + batch_size]
+            logger.info(f"--- Batch {i // batch_size + 1}: {len(batch)} call(s) ---")
             await run_batch(session, args.server, batch)
 
         rows = await fetch_results(session, args.server)
