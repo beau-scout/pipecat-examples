@@ -127,8 +127,17 @@ const JUDGE_SCHEMA = {
   required: ['expected_outcome', 'actual_outcome', 'outcome_correct', 'pass', 'worst_severity', 'failures', 'one_line'],
 }
 
+// Track selector: args.track = 'ivr' | 'receptionist' | 'both' (default 'both').
+// e.g. Workflow({ scriptPath: ".../simulate.js", args: { track: "ivr" } }) runs
+// only the 50 voice-menu navigation scenarios.
+const TRACK = (args && args.track) || 'both'
+const runRec = TRACK === 'both' || TRACK === 'receptionist'
+const runIvr = TRACK === 'both' || TRACK === 'ivr'
+
+let recResults = []
+if (runRec) {
 phase('ReceptionistSim')
-const recResults = await pipeline(
+recResults = await pipeline(
   RSCEN,
   (s) =>
     agent(
@@ -147,9 +156,12 @@ const recResults = await pipeline(
       { label: `judge#${s.idx}:${s.id}`, phase: 'ReceptionistJudge', schema: JUDGE_SCHEMA }
     ).then((v) => ({ track: 'receptionist', scenario: s, sim, judge: v }))
 )
+}
 
+let ivrResults = []
+if (runIvr) {
 phase('IvrSim')
-const ivrResults = await pipeline(
+ivrResults = await pipeline(
   ISCEN,
   (s) =>
     agent(
@@ -169,6 +181,7 @@ const ivrResults = await pipeline(
       { label: `ivrjudge#${s.idx}:${s.id}`, phase: 'IvrJudge', schema: JUDGE_SCHEMA }
     ).then((v) => ({ track: 'ivr', scenario: s, sim, judge: v }))
 )
+}
 
 // Null-safe aggregation: pipeline items that errored come back as null.
 function agg(rows) {
